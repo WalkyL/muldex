@@ -6,8 +6,10 @@ use crate::protocol::CheckpointRef;
 use crate::protocol::ContinueMode;
 use crate::protocol::ContextPressure;
 use crate::protocol::MediaContextEnvelope;
+use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
 use crate::protocol::RecoverySnapshot;
+use crate::protocol::RuntimeModeState;
 use crate::protocol::SelfCorrectionState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +42,8 @@ pub struct ReasoningHarnessRequest {
     pub recovery: RecoverySnapshot,
     pub last_checkpoint: Option<CheckpointRef>,
     pub self_correction: SelfCorrectionState,
+    pub post_compaction: PostCompactionState,
+    pub runtime_mode: RuntimeModeState,
     pub context_pressure: ContextPressure,
     pub media_context: Vec<MediaContextEnvelope>,
     pub capability_registry: CapabilityRegistrySnapshot,
@@ -137,6 +141,8 @@ mod tests {
                 last_correction_target: None,
                 last_correction_had_progress: false,
             },
+            post_compaction: PostCompactionState::default(),
+            runtime_mode: RuntimeModeState::default(),
             context_pressure: ContextPressure::default(),
             media_context: Vec::new(),
             capability_registry: CapabilityRegistrySnapshot::default(),

@@ -315,3 +315,4 @@ Acceptance:
 - orchestration traits compile
 - local deterministic implementation compiles
 - `cargo check` passes
+- binary supports a real workspace invocation path

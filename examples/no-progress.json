@@ -1,0 +1,70 @@
+{
+  "objective": "continue a long-running coding task",
+  "constraints": [
+    "do not spin",
+    "checkpoint before handoff"
+  ],
+  "evidence_scope": [
+    "current repository"
+  ],
+  "allowed_capability_classes": [
+    "tool",
+    "skill"
+  ],
+  "prohibited_behaviors": [
+    "NoFakeProgress",
+    "NoRepeatedNoProgressContinuation",
+    "NoDuplicateInjection"
+  ],
+  "progress": {
+    "completed_steps": 3,
+    "total_steps_hint": 8,
+    "last_meaningful_progress_at_ms": 1700000000000,
+    "no_progress_iteration_count": 3
+  },
+  "recovery": {
+    "last_recovery_reason": "PartialResult",
+    "recovery_attempt_count": 1,
+    "last_recovery_had_progress": false
+  },
+  "last_checkpoint": {
+    "checkpoint_id": "cp-1",
+    "thread_id": "thread-1",
+    "turn_id": "turn-5",
+    "created_at_ms": 1700000000000,
+    "summary": "checkpoint after media analysis"
+  },
+  "self_correction": {
+    "active": false,
+    "correction_attempt_count": 0,
+    "last_correction_target": null,
+    "last_correction_had_progress": false
+  },
+  "context_pressure": {
+    "model_context_window": 256000,
+    "active_context_tokens": 140000,
+    "auto_compact_scope_tokens": 24000,
+    "auto_compact_limit": 192000,
+    "tokens_until_compaction": 52000,
+    "recent_compaction_count": 1,
+    "last_compaction_had_state_change": true
+  },
+  "media_context": [],
+  "capability_registry": {
+    "mcp": [],
+    "skills": [],
+    "agent_data_protocols": [],
+    "asr_backends": [],
+    "alignment_backends": [],
+    "generative_backends": [],
+    "agent_modes": [],
+    "subagents": [],
+    "surfaces": []
+  },
+  "escalation_policy": {
+    "no_progress_limit": 3,
+    "repeated_compaction_limit": 2,
+    "self_correction_limit": 2,
+    "request_checkpoint_before_handoff": true
+  }
+}

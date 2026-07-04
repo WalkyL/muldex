@@ -66,9 +66,16 @@
 
 - implementation slice is completed with focused scope
 - code compiles or any blocker is explicitly recorded
+- a human-runnable real-environment invocation path exists when the slice claims runtime behavior value
 
 ### Validation pass
 
 - types and trait boundaries are reviewed for missing fields or bad ownership
 - acceptance criteria are checked against actual artifacts
 - gaps are recorded as follow-up items instead of implicit assumptions
+
+### Real environment validation
+
+- operators can run the binary against a real workspace path
+- output is understandable without reading source code
+- simulated anti-spin and recovery scenarios are available through stable CLI flags or files

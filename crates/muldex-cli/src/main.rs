@@ -4,11 +4,17 @@ use muldex_core::protocol::CapabilityRegistrySnapshot;
 use muldex_core::protocol::CheckpointRef;
 use muldex_core::protocol::ContextPressure;
 use muldex_core::protocol::ContinueMode;
+use muldex_core::protocol::MediaAssetRef;
 use muldex_core::protocol::MediaContextEnvelope;
+use muldex_core::protocol::MediaKind;
+use muldex_core::protocol::MediaSource;
+use muldex_core::protocol::PostCompactionState;
 use muldex_core::protocol::ProgressSnapshot;
 use muldex_core::protocol::RecoveryReason;
 use muldex_core::protocol::RecoverySnapshot;
+use muldex_core::protocol::RuntimeModeState;
 use muldex_core::protocol::SelfCorrectionState;
+use muldex_core::protocol::SkillInvocationState;
 use muldex_core::reasoning_harness::EscalationPolicy;
 use muldex_core::reasoning_harness::ProhibitionRule;
 use muldex_core::reasoning_harness::ReasoningHarnessRequest;
@@ -23,14 +29,44 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Debug, Subcommand)]
-enum Command {
-    DecideSample,
-    DecideFile { path: PathBuf },
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum Scenario {
+    Healthy,
+    NoProgress,
+    RecoverableFailure,
+    PostCompactionStall,
+    MediaHeavy,
 }
 
-fn sample_request() -> ReasoningHarnessRequest {
-    ReasoningHarnessRequest {
+#[derive(Debug, Subcommand)]
+enum Command {
+    DecideSample {
+        #[arg(long, value_enum, default_value = "healthy")]
+        scenario: Scenario,
+    },
+    DecideFile { path: PathBuf },
+    DecideWorkspace {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        objective: Option<String>,
+        #[arg(long = "objective-file")]
+        objective_file: Option<PathBuf>,
+        #[arg(long, default_value = "build")]
+        mode: String,
+        #[arg(long, default_value_t = 0)]
+        no_progress_iterations: u32,
+        #[arg(long, default_value_t = false)]
+        post_compaction: bool,
+        #[arg(long, default_value_t = false)]
+        recoverable_failure: bool,
+        #[arg(long, default_value_t = false)]
+        print_request: bool,
+    },
+}
+
+fn sample_request(scenario: Scenario) -> ReasoningHarnessRequest {
+    let mut request = ReasoningHarnessRequest {
         objective: "continue a long-running coding task".to_string(),
         constraints: vec![
             "do not spin".to_string(),
@@ -67,6 +103,22 @@ fn sample_request() -> ReasoningHarnessRequest {
             last_correction_target: None,
             last_correction_had_progress: false,
         },
+        post_compaction: PostCompactionState {
+            pending_post_compaction: false,
+            first_post_compaction_turn: false,
+            compaction_window_id: Some("window-1".to_string()),
+            last_compaction_checkpoint_id: Some("cp-1".to_string()),
+        },
+        runtime_mode: RuntimeModeState {
+            active_agent_mode: Some("build".to_string()),
+            previous_agent_mode: Some("plan".to_string()),
+            mode_transition_pending_guidance: false,
+            invoked_skills: vec![SkillInvocationState {
+                skill_id: "context-budget-gate".to_string(),
+                invocation_ref: Some("skill://gate/1".to_string()),
+                invoked_at_ms: Some(1_700_000_000_123),
+            }],
+        },
         context_pressure: ContextPressure {
             model_context_window: Some(256_000),
             active_context_tokens: Some(140_000),
@@ -84,22 +136,170 @@ fn sample_request() -> ReasoningHarnessRequest {
             self_correction_limit: 2,
             request_checkpoint_before_handoff: true,
         },
+    };
+
+    match scenario {
+        Scenario::Healthy => {}
+        Scenario::NoProgress => {
+            request.progress.no_progress_iteration_count = 3;
+            request.recovery.last_recovery_had_progress = false;
+        }
+        Scenario::RecoverableFailure => {
+            request.recovery.last_recovery_reason = Some(RecoveryReason::ToolFailure);
+            request.recovery.last_recovery_had_progress = false;
+            request.self_correction.active = true;
+            request.self_correction.correction_attempt_count = 1;
+            request.self_correction.last_correction_target = Some("retry failed tool step".to_string());
+        }
+        Scenario::PostCompactionStall => {
+            request.post_compaction.pending_post_compaction = true;
+            request.post_compaction.first_post_compaction_turn = true;
+            request.progress.no_progress_iteration_count = 2;
+            request.recovery.last_recovery_had_progress = false;
+        }
+        Scenario::MediaHeavy => {
+            request.objective = "analyze multimodal evidence and continue safely".to_string();
+            request.media_context.push(MediaContextEnvelope {
+                asset: crate_media_asset("video-1", "clips/demo.mp4"),
+                derived_artifacts: Vec::new(),
+                hyperframes: Vec::new(),
+                operator_summary: "video and transcript are available".to_string(),
+                model_summary: "use hyperframe-aligned evidence".to_string(),
+                token_budget_hint: Some(4096),
+            });
+        }
     }
+
+    request
+}
+
+fn crate_media_asset(asset_id: &str, path: &str) -> MediaAssetRef {
+    MediaAssetRef {
+        asset_id: asset_id.to_string(),
+        kind: MediaKind::Video,
+        source: MediaSource::LocalPath {
+            path: path.to_string(),
+        },
+        display_name: Some(asset_id.to_string()),
+    }
+}
+
+fn print_decision(decision: &muldex_core::reasoning_harness::ReasoningHarnessDecision) {
+    println!("mode: {}", match decision.mode {
+        ContinueMode::SameTurn => "same_turn",
+        ContinueMode::NextTurn => "next_turn",
+        ContinueMode::QueueOnly => "queue_only",
+        ContinueMode::Handoff => "handoff",
+        ContinueMode::Stop => "stop",
+    });
+    println!("checkpoint: {}", decision.should_checkpoint);
+    println!("self_correction: {}", decision.should_enter_self_correction);
+    println!("rationale: {}", decision.rationale);
+    if !decision.violated_rules.is_empty() {
+        println!("violated_rules: {:?}", decision.violated_rules);
+    }
+}
+
+fn build_workspace_request(
+    workspace: PathBuf,
+    objective: Option<String>,
+    objective_file: Option<PathBuf>,
+    mode: String,
+    no_progress_iterations: u32,
+    post_compaction: bool,
+    recoverable_failure: bool,
+) -> Result<ReasoningHarnessRequest, Box<dyn std::error::Error>> {
+    if !workspace.exists() || !workspace.is_dir() {
+        return Err(format!("workspace does not exist or is not a directory: {}", workspace.display()).into());
+    }
+
+    let objective = match (objective, objective_file) {
+        (Some(text), None) => text,
+        (None, Some(path)) => fs::read_to_string(path)?,
+        (Some(_), Some(_)) => {
+            return Err("provide either --objective or --objective-file, not both".into())
+        }
+        (None, None) => return Err("provide --objective or --objective-file".into()),
+    };
+
+    let git_hint = if workspace.join(".git").exists() {
+        "git repository"
+    } else {
+        "non-git workspace"
+    };
+
+    let mut request = sample_request(Scenario::Healthy);
+    request.objective = objective.trim().to_string();
+    request.evidence_scope = vec![
+        format!("workspace: {}", workspace.display()),
+        format!("workspace_kind: {git_hint}"),
+    ];
+    request.runtime_mode.active_agent_mode = Some(mode);
+    request.progress.no_progress_iteration_count = no_progress_iterations;
+
+    if post_compaction {
+        request.post_compaction.pending_post_compaction = true;
+        request.post_compaction.first_post_compaction_turn = true;
+    }
+
+    if recoverable_failure {
+        request.recovery.last_recovery_reason = Some(RecoveryReason::ToolFailure);
+        request.recovery.last_recovery_had_progress = false;
+        request.self_correction.active = true;
+        request.self_correction.correction_attempt_count = 1;
+        request.self_correction.last_correction_target = Some(
+            "retry failed step in real workspace".to_string(),
+        );
+    }
+
+    Ok(request)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::DecideSample => {
-            let request = sample_request();
+        Command::DecideSample { scenario } => {
+            let request = sample_request(scenario);
             let decision = decide_reasoning_harness(&request);
+            print_decision(&decision);
+            println!();
             println!("{}", serde_json::to_string_pretty(&decision)?);
         }
         Command::DecideFile { path } => {
             let raw = fs::read_to_string(path)?;
             let request: ReasoningHarnessRequest = serde_json::from_str(&raw)?;
             let decision = decide_reasoning_harness(&request);
+            print_decision(&decision);
+            println!();
+            println!("{}", serde_json::to_string_pretty(&decision)?);
+        }
+        Command::DecideWorkspace {
+            workspace,
+            objective,
+            objective_file,
+            mode,
+            no_progress_iterations,
+            post_compaction,
+            recoverable_failure,
+            print_request,
+        } => {
+            let request = build_workspace_request(
+                workspace,
+                objective,
+                objective_file,
+                mode,
+                no_progress_iterations,
+                post_compaction,
+                recoverable_failure,
+            )?;
+            if print_request {
+                println!("{}", serde_json::to_string_pretty(&request)?);
+                println!();
+            }
+            let decision = decide_reasoning_harness(&request);
+            print_decision(&decision);
+            println!();
             println!("{}", serde_json::to_string_pretty(&decision)?);
         }
     }
