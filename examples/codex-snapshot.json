@@ -1,0 +1,57 @@
+{
+  "thread_id": "thread-1",
+  "turn_id": "turn-9",
+  "objective": "finish the task",
+  "constraints": [
+    "do not spin"
+  ],
+  "working_hypothesis": "pending input is rearming the loop",
+  "last_agent_message": "checking runtime state",
+  "continue_reason": "PendingInput",
+  "recent_state_changes": [
+    "NoMeaningfulChange"
+  ],
+  "pending_input_count": 2,
+  "trigger_turn_pending": true,
+  "tool_call_count_this_turn": 4,
+  "duplicate_injection_detected": true,
+  "repeated_follow_up_count": 3,
+  "model_context_window": 256000,
+  "active_context_tokens": 150000,
+  "auto_compact_scope_tokens": 30000,
+  "auto_compact_limit": 192000,
+  "tokens_until_compaction": 42000,
+  "recent_compaction_count": 2,
+  "last_compaction_had_state_change": false,
+  "pending_post_compaction": true,
+  "first_post_compaction_turn": false,
+  "compaction_window_id": "window-3",
+  "last_compaction_checkpoint_id": "cp-7",
+  "completed_steps": 5,
+  "total_steps_hint": 9,
+  "no_progress_iteration_count": 2,
+  "recovery_attempt_count": 1,
+  "last_recovery_reason": "PartialResult",
+  "last_recovery_had_progress": false,
+  "self_correction_active": true,
+  "self_correction_attempt_count": 1,
+  "last_correction_target": "retry failed step",
+  "last_correction_had_progress": false,
+  "active_agent_mode": "build",
+  "previous_agent_mode": "plan",
+  "mode_transition_pending_guidance": false,
+  "invoked_skills": [
+    "context-budget-gate"
+  ],
+  "capability_registry": {
+    "mcp": [],
+    "skills": [],
+    "agent_data_protocols": [],
+    "asr_backends": [],
+    "alignment_backends": [],
+    "generative_backends": [],
+    "agent_modes": [],
+    "subagents": [],
+    "surfaces": []
+  }
+}

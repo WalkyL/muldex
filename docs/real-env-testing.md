@@ -23,6 +23,16 @@ Optional flags:
 - `--recoverable-failure`
 - `--print-request`
 
+## Upstream runtime sample path
+
+Use:
+
+```bash
+muldex decide-codex-snapshot examples/codex-snapshot.json
+```
+
+This path is for feeding captured or synthesized upstream Codex runtime signals into `muldex`'s harness layer.
+
 ## Example commands
 
 Healthy continuation:

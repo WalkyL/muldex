@@ -19,6 +19,8 @@ use muldex_core::reasoning_harness::EscalationPolicy;
 use muldex_core::reasoning_harness::ProhibitionRule;
 use muldex_core::reasoning_harness::ReasoningHarnessRequest;
 use muldex_core::reasoning_harness::decide_reasoning_harness;
+use muldex_core::upstream_adapter::CodexSignalSnapshot;
+use muldex_core::upstream_adapter::codex_snapshot_to_harness_request;
 use std::fs;
 use std::path::PathBuf;
 
@@ -45,6 +47,7 @@ enum Command {
         scenario: Scenario,
     },
     DecideFile { path: PathBuf },
+    DecideCodexSnapshot { path: PathBuf },
     DecideWorkspace {
         #[arg(long)]
         workspace: PathBuf,
@@ -269,6 +272,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::DecideFile { path } => {
             let raw = fs::read_to_string(path)?;
             let request: ReasoningHarnessRequest = serde_json::from_str(&raw)?;
+            let decision = decide_reasoning_harness(&request);
+            print_decision(&decision);
+            println!();
+            println!("{}", serde_json::to_string_pretty(&decision)?);
+        }
+        Command::DecideCodexSnapshot { path } => {
+            let raw = fs::read_to_string(path)?;
+            let snapshot: CodexSignalSnapshot = serde_json::from_str(&raw)?;
+            let request = codex_snapshot_to_harness_request(snapshot);
             let decision = decide_reasoning_harness(&request);
             print_decision(&decision);
             println!();
