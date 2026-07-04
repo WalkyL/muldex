@@ -4,9 +4,12 @@
   "cwd": "/workspace",
   "model": "gpt-5.4",
   "model_provider": "llm-router",
+  "collaboration_mode": "build",
+  "personality": "pragmatic",
   "model_context_window": 258400,
   "auto_compact_token_limit": 193800,
   "auto_compact_token_limit_scope": "body_after_prefix",
+  "reference_context_present": true,
   "prompt_input_count": 3,
   "input_modalities": [
     "Text",

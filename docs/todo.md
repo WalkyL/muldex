@@ -135,6 +135,22 @@ Status:
 
 - partially done in docs, not yet encoded as Rust adapter types
 
+### TODO-005A: Agently skill availability in the programming environment
+
+Scope:
+
+- provide an Agently integration skill in the active coding environment
+- ensure the environment can discover when Agently-backed orchestration is the right path
+
+Acceptance:
+
+- Agently integration guidance is present as a discoverable skill in the programming environment
+- the skill makes the ownership boundary and safety constraints explicit
+
+Status:
+
+- done in current slice for the local opencode environment
+
 ### TODO-006: Audio/video context ingestion contract
 
 Scope:

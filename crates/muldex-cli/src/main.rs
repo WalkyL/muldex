@@ -205,6 +205,16 @@ fn print_decision(decision: &muldex_core::reasoning_harness::ReasoningHarnessDec
     }
 }
 
+fn print_bootstrap_snapshot_summary(snapshot: &CodexBootstrapSnapshot) {
+    println!("snapshot.kind: codex-bootstrap");
+    println!("snapshot.model: {}", snapshot.model);
+    println!("snapshot.provider: {}", snapshot.model_provider);
+    println!("snapshot.mode: {}", snapshot.collaboration_mode);
+    println!("snapshot.reference_context: {}", snapshot.reference_context_present);
+    println!("snapshot.input_modalities: {:?}", snapshot.input_modalities);
+    println!("snapshot.tools_visible: {}", snapshot.tools_visible_count);
+}
+
 fn build_workspace_request(
     workspace: PathBuf,
     objective: Option<String>,
@@ -285,6 +295,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(snapshot) => codex_snapshot_to_harness_request(snapshot),
                 Err(_) => {
                     let bootstrap: CodexBootstrapSnapshot = serde_json::from_str(&raw)?;
+                    print_bootstrap_snapshot_summary(&bootstrap);
+                    println!();
                     codex_bootstrap_snapshot_to_harness_request(bootstrap)
                 }
             };

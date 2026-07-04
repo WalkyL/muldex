@@ -66,9 +66,12 @@ pub struct CodexBootstrapSnapshot {
     pub cwd: String,
     pub model: String,
     pub model_provider: String,
+    pub collaboration_mode: String,
+    pub personality: Option<String>,
     pub model_context_window: Option<u32>,
     pub auto_compact_token_limit: Option<u32>,
     pub auto_compact_token_limit_scope: String,
+    pub reference_context_present: bool,
     pub prompt_input_count: usize,
     pub input_modalities: Vec<String>,
     pub tools_visible_count: usize,
@@ -182,6 +185,8 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
             format!("cwd: {}", snapshot.cwd),
             format!("model: {}", snapshot.model),
             format!("provider: {}", snapshot.model_provider),
+            format!("collaboration_mode: {}", snapshot.collaboration_mode),
+            format!("reference_context_present: {}", snapshot.reference_context_present),
         ],
         allowed_capability_classes: vec![
             "tool".to_string(),
@@ -218,7 +223,7 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
             last_compaction_checkpoint_id: None,
         },
         runtime_mode: RuntimeModeState {
-            active_agent_mode: Some("build".to_string()),
+            active_agent_mode: Some(snapshot.collaboration_mode),
             previous_agent_mode: None,
             mode_transition_pending_guidance: false,
             invoked_skills: Vec::new(),
@@ -321,9 +326,12 @@ mod tests {
             cwd: "/workspace".to_string(),
             model: "gpt-5.4".to_string(),
             model_provider: "llm-router".to_string(),
+            collaboration_mode: "build".to_string(),
+            personality: Some("pragmatic".to_string()),
             model_context_window: Some(258_400),
             auto_compact_token_limit: Some(193_800),
             auto_compact_token_limit_scope: "body_after_prefix".to_string(),
+            reference_context_present: true,
             prompt_input_count: 3,
             input_modalities: vec!["Text".to_string(), "Image".to_string()],
             tools_visible_count: 11,
@@ -336,5 +344,9 @@ mod tests {
             .constraints
             .iter()
             .any(|line| line.contains("image-capable model path")));
+        assert!(request
+            .evidence_scope
+            .iter()
+            .any(|line| line.contains("reference_context_present: true")));
     }
 }
