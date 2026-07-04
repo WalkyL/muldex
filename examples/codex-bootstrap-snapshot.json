@@ -1,0 +1,17 @@
+{
+  "thread_id": "019f2f6f-b844-7f03-9be0-552cc9a35630",
+  "turn_id": "auto-compact-0",
+  "cwd": "/workspace",
+  "model": "gpt-5.4",
+  "model_provider": "llm-router",
+  "model_context_window": 258400,
+  "auto_compact_token_limit": 193800,
+  "auto_compact_token_limit_scope": "body_after_prefix",
+  "prompt_input_count": 3,
+  "input_modalities": [
+    "Text",
+    "Image"
+  ],
+  "tools_visible_count": 11,
+  "prompt_preview_text_items": 3
+}

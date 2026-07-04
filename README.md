@@ -13,6 +13,8 @@ The project is Rust-first. If we adopt external agent frameworks such as Agently
 
 `muldex` should preserve Codex's interface style and operator habits as much as possible. Runtime and orchestration changes are allowed; unnecessary UI/UX divergence is not.
 
+That also applies to sandbox and approval behavior. `muldex` should stay close to Codex semantics for sandbox policy, permission escalation, and operator review flow unless there is a clear reason to diverge.
+
 The name `muldex` also implies a multimodal direction. Audio and video should eventually be able to enter working context through bounded derived artifacts and summaries rather than raw media injection.
 
 ## Why this exists

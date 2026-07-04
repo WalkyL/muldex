@@ -192,3 +192,25 @@ These should not remain implicit side channels. They must be representable in Ru
 - multiple operator surfaces such as terminal, desktop, and remote or detached sessions
 
 These are not just UI concerns. They affect permissions, continuation policy, wakeup behavior, and routing decisions.
+
+## Codex session continuity
+
+`muldex` should eventually be able to consume enough Codex runtime/session state to continue useful programming work from an existing Codex conversation.
+
+This does not require replaying the entire raw session transcript. The preferred path is:
+
+1. export a bounded Codex runtime snapshot
+2. translate it into `muldex` harness state
+3. continue programming from structured state rather than raw transcript replay
+
+The goal is practical continuity, not perfect byte-for-byte replay fidelity.
+
+## Sandbox and approval compatibility
+
+`muldex` should preserve Codex-like safety semantics by default:
+
+- similar sandbox modes
+- similar approval intent and escalation boundaries
+- similar operator-facing permission review rhythm
+
+New orchestration layers may add more structure, but they should not silently weaken Codex's existing trust and approval model.

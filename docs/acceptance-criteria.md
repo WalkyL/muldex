@@ -9,6 +9,7 @@
 - UI/UX compatibility goal with Codex is explicitly documented
 - audio/video-to-context capability is described as a bounded artifact pipeline, not as raw upload magic
 - capability audit exists for model/runtime surfaces that could force kernel redesign later
+- sandbox and approval compatibility with Codex is explicitly documented
 
 ### Reasoning harness
 
@@ -35,6 +36,11 @@
 - protocol can describe reasoning controls, structured-output controls, execution modes, and context features
 - MCP, skills, and Agent Data Protocol can be described through explicit capability snapshots
 - future media and document support can be added without redesigning orchestration ownership
+
+### Codex continuity and safety
+
+- the design leaves room to continue useful work from Codex session state
+- sandbox and approval semantics are not silently weakened relative to Codex defaults
 
 ### Long-running execution
 

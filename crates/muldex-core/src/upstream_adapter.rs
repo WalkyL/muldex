@@ -59,6 +59,22 @@ pub struct CodexSignalSnapshot {
     pub capability_registry: CapabilityRegistrySnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexBootstrapSnapshot {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub cwd: String,
+    pub model: String,
+    pub model_provider: String,
+    pub model_context_window: Option<u32>,
+    pub auto_compact_token_limit: Option<u32>,
+    pub auto_compact_token_limit_scope: String,
+    pub prompt_input_count: usize,
+    pub input_modalities: Vec<String>,
+    pub tools_visible_count: usize,
+    pub prompt_preview_text_items: usize,
+}
+
 pub fn codex_snapshot_to_harness_request(
     snapshot: CodexSignalSnapshot,
 ) -> ReasoningHarnessRequest {
@@ -143,6 +159,105 @@ pub fn codex_snapshot_to_harness_request(
     }
 }
 
+pub fn codex_bootstrap_snapshot_to_harness_request(
+    snapshot: CodexBootstrapSnapshot,
+) -> ReasoningHarnessRequest {
+    let required_modalities = snapshot
+        .input_modalities
+        .iter()
+        .map(|modality| modality.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mentions_image = required_modalities.iter().any(|item| item.contains("image"));
+
+    ReasoningHarnessRequest {
+        objective: format!(
+            "continue useful work in workspace {} from codex bootstrap state",
+            snapshot.cwd
+        ),
+        constraints: vec![
+            "do not spin".to_string(),
+            "respect codex-compatible sandbox and approval semantics".to_string(),
+        ],
+        evidence_scope: vec![
+            format!("cwd: {}", snapshot.cwd),
+            format!("model: {}", snapshot.model),
+            format!("provider: {}", snapshot.model_provider),
+        ],
+        allowed_capability_classes: vec![
+            "tool".to_string(),
+            "skill".to_string(),
+            "mcp".to_string(),
+        ],
+        prohibited_behaviors: vec![
+            ProhibitionRule::NoFakeProgress,
+            ProhibitionRule::NoRepeatedNoProgressContinuation,
+            ProhibitionRule::NoSilentScopeExpansion,
+        ],
+        progress: ProgressSnapshot {
+            completed_steps: 0,
+            total_steps_hint: None,
+            last_meaningful_progress_at_ms: None,
+            no_progress_iteration_count: 0,
+        },
+        recovery: RecoverySnapshot {
+            last_recovery_reason: None,
+            recovery_attempt_count: 0,
+            last_recovery_had_progress: true,
+        },
+        last_checkpoint: None,
+        self_correction: SelfCorrectionState {
+            active: false,
+            correction_attempt_count: 0,
+            last_correction_target: None,
+            last_correction_had_progress: false,
+        },
+        post_compaction: PostCompactionState {
+            pending_post_compaction: false,
+            first_post_compaction_turn: false,
+            compaction_window_id: None,
+            last_compaction_checkpoint_id: None,
+        },
+        runtime_mode: RuntimeModeState {
+            active_agent_mode: Some("build".to_string()),
+            previous_agent_mode: None,
+            mode_transition_pending_guidance: false,
+            invoked_skills: Vec::new(),
+        },
+        context_pressure: ContextPressure {
+            model_context_window: snapshot.model_context_window,
+            active_context_tokens: None,
+            auto_compact_scope_tokens: None,
+            auto_compact_limit: snapshot.auto_compact_token_limit,
+            tokens_until_compaction: None,
+            recent_compaction_count: 0,
+            last_compaction_had_state_change: true,
+        },
+        media_context: Vec::new(),
+        capability_registry: CapabilityRegistrySnapshot::default(),
+        escalation_policy: EscalationPolicy {
+            no_progress_limit: 3,
+            repeated_compaction_limit: 2,
+            self_correction_limit: 2,
+            request_checkpoint_before_handoff: true,
+        },
+    }
+    .with_modalities_hint(mentions_image)
+}
+
+trait BootstrapHintExt {
+    fn with_modalities_hint(self, mentions_image: bool) -> Self;
+}
+
+impl BootstrapHintExt for ReasoningHarnessRequest {
+    fn with_modalities_hint(mut self, mentions_image: bool) -> Self {
+        if mentions_image {
+            self.constraints
+                .push("image-capable model path may be required".to_string());
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +311,30 @@ mod tests {
         assert!(request.post_compaction.pending_post_compaction);
         assert_eq!(request.runtime_mode.invoked_skills.len(), 1);
         assert_eq!(request.context_pressure.recent_compaction_count, 2);
+    }
+
+    #[test]
+    fn bootstrap_snapshot_maps_into_harness_request() {
+        let snapshot = CodexBootstrapSnapshot {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            cwd: "/workspace".to_string(),
+            model: "gpt-5.4".to_string(),
+            model_provider: "llm-router".to_string(),
+            model_context_window: Some(258_400),
+            auto_compact_token_limit: Some(193_800),
+            auto_compact_token_limit_scope: "body_after_prefix".to_string(),
+            prompt_input_count: 3,
+            input_modalities: vec!["Text".to_string(), "Image".to_string()],
+            tools_visible_count: 11,
+            prompt_preview_text_items: 3,
+        };
+
+        let request = codex_bootstrap_snapshot_to_harness_request(snapshot);
+        assert_eq!(request.runtime_mode.active_agent_mode.as_deref(), Some("build"));
+        assert!(request
+            .constraints
+            .iter()
+            .any(|line| line.contains("image-capable model path")));
     }
 }

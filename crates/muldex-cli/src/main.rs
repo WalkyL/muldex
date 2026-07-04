@@ -19,7 +19,9 @@ use muldex_core::reasoning_harness::EscalationPolicy;
 use muldex_core::reasoning_harness::ProhibitionRule;
 use muldex_core::reasoning_harness::ReasoningHarnessRequest;
 use muldex_core::reasoning_harness::decide_reasoning_harness;
+use muldex_core::upstream_adapter::CodexBootstrapSnapshot;
 use muldex_core::upstream_adapter::CodexSignalSnapshot;
+use muldex_core::upstream_adapter::codex_bootstrap_snapshot_to_harness_request;
 use muldex_core::upstream_adapter::codex_snapshot_to_harness_request;
 use std::fs;
 use std::path::PathBuf;
@@ -279,8 +281,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::DecideCodexSnapshot { path } => {
             let raw = fs::read_to_string(path)?;
-            let snapshot: CodexSignalSnapshot = serde_json::from_str(&raw)?;
-            let request = codex_snapshot_to_harness_request(snapshot);
+            let request = match serde_json::from_str::<CodexSignalSnapshot>(&raw) {
+                Ok(snapshot) => codex_snapshot_to_harness_request(snapshot),
+                Err(_) => {
+                    let bootstrap: CodexBootstrapSnapshot = serde_json::from_str(&raw)?;
+                    codex_bootstrap_snapshot_to_harness_request(bootstrap)
+                }
+            };
             let decision = decide_reasoning_harness(&request);
             print_decision(&decision);
             println!();

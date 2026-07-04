@@ -22,11 +22,13 @@ Scope:
 
 - document which parts of Codex interaction style are compatibility targets
 - treat runtime replacement and UI replacement as separate decisions
+- treat sandbox and approval compatibility as first-class constraints
 
 Acceptance:
 
 - docs explicitly state that Codex interface style and operator habits should be preserved by default
 - later implementation items do not silently assume a brand-new interaction model
+- docs explicitly state sandbox and approval behavior should remain close to Codex
 
 Status:
 
@@ -255,6 +257,23 @@ Acceptance:
 Status:
 
 - documented, not yet encoded as dedicated Rust protocol types
+
+### TODO-006F: Codex session continuity contract
+
+Scope:
+
+- define how bounded Codex session/runtime snapshots enter `muldex`
+- define what minimum state is required to continue useful programming work
+- avoid full raw transcript replay as the default continuation path
+
+Acceptance:
+
+- `muldex` can consume structured Codex session state as a continuation input
+- continuation can be attempted from bounded state rather than full transcript replay
+
+Status:
+
+- documented, partially prototyped through `CodexSignalSnapshot`
 
 ## Phase 2 target items
 
