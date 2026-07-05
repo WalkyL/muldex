@@ -86,6 +86,18 @@ pub struct CodexBootstrapSnapshot {
     pub prompt_preview_text_items: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexLiveContinuationSnapshot {
+    pub thread_id: String,
+    pub active_turn_present: bool,
+    pub pending_input_present: bool,
+    pub trigger_turn_mailbox_present: bool,
+    pub auto_compact_window_number: u64,
+    pub total_input_tokens: Option<i64>,
+    pub total_cached_input_tokens: Option<i64>,
+    pub total_output_tokens: Option<i64>,
+}
+
 pub fn codex_snapshot_to_harness_request(
     snapshot: CodexSignalSnapshot,
 ) -> ReasoningHarnessRequest {
@@ -294,6 +306,92 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
     .with_modalities_hint(mentions_image)
 }
 
+pub fn codex_live_snapshot_to_harness_request(
+    snapshot: CodexLiveContinuationSnapshot,
+) -> ReasoningHarnessRequest {
+    let continue_reason = if snapshot.trigger_turn_mailbox_present {
+        ContinueReason::TriggerTurnWakeup
+    } else if snapshot.pending_input_present {
+        ContinueReason::PendingInput
+    } else {
+        ContinueReason::ManualUserRequest
+    };
+
+    ReasoningHarnessRequest {
+        objective: "decide whether the live continuation state should keep running".to_string(),
+        constraints: vec![
+            "do not spin".to_string(),
+            "prefer bounded continuation decisions".to_string(),
+        ],
+        evidence_scope: vec![
+            format!("thread_id: {}", snapshot.thread_id),
+            format!("active_turn_present: {}", snapshot.active_turn_present),
+            format!("pending_input_present: {}", snapshot.pending_input_present),
+            format!(
+                "trigger_turn_mailbox_present: {}",
+                snapshot.trigger_turn_mailbox_present
+            ),
+            format!("continue_reason: {:?}", continue_reason),
+        ],
+        allowed_capability_classes: vec!["tool".to_string(), "skill".to_string()],
+        prohibited_behaviors: vec![
+            ProhibitionRule::NoFakeProgress,
+            ProhibitionRule::NoRepeatedNoProgressContinuation,
+        ],
+        progress: ProgressSnapshot {
+            completed_steps: 0,
+            total_steps_hint: None,
+            last_meaningful_progress_at_ms: None,
+            no_progress_iteration_count: if snapshot.pending_input_present { 1 } else { 0 },
+        },
+        recovery: RecoverySnapshot {
+            last_recovery_reason: None,
+            recovery_attempt_count: 0,
+            last_recovery_had_progress: true,
+        },
+        last_checkpoint: None,
+        self_correction: SelfCorrectionState {
+            active: false,
+            correction_attempt_count: 0,
+            last_correction_target: None,
+            last_correction_had_progress: false,
+        },
+        post_compaction: PostCompactionState {
+            pending_post_compaction: false,
+            first_post_compaction_turn: false,
+            compaction_window_id: Some(format!("window-{}", snapshot.auto_compact_window_number)),
+            last_compaction_checkpoint_id: None,
+        },
+        runtime_mode: RuntimeModeState::default(),
+        safety: PermissionContextSnapshot {
+            sandbox_mode: SandboxModeDescriptor::Unknown,
+            approval_policy: ApprovalPolicyDescriptor::Unknown,
+            permission_profile_summary: "live snapshot did not include safety state".to_string(),
+            network_access_enabled: false,
+            requires_explicit_approval_for_next_step: false,
+        },
+        codex_continuation: None,
+        context_pressure: ContextPressure {
+            model_context_window: None,
+            active_context_tokens: snapshot.total_input_tokens.and_then(|v| u32::try_from(v).ok()),
+            auto_compact_scope_tokens: None,
+            auto_compact_limit: None,
+            tokens_until_compaction: None,
+            recent_compaction_count: u32::try_from(snapshot.auto_compact_window_number)
+                .unwrap_or(u32::MAX),
+            last_compaction_had_state_change: true,
+        },
+        media_context: Vec::new(),
+        capability_registry: CapabilityRegistrySnapshot::default(),
+        escalation_policy: EscalationPolicy {
+            no_progress_limit: 3,
+            repeated_compaction_limit: 2,
+            self_correction_limit: 2,
+            request_checkpoint_before_handoff: true,
+        },
+    }
+}
+
 trait BootstrapHintExt {
     fn with_modalities_hint(self, mentions_image: bool) -> Self;
 }
@@ -397,5 +495,27 @@ mod tests {
             .evidence_scope
             .iter()
             .any(|line| line.contains("reference_context_present: true")));
+    }
+
+    #[test]
+    fn live_snapshot_maps_into_harness_request() {
+        let snapshot = CodexLiveContinuationSnapshot {
+            thread_id: "thread-1".to_string(),
+            active_turn_present: true,
+            pending_input_present: true,
+            trigger_turn_mailbox_present: false,
+            auto_compact_window_number: 2,
+            total_input_tokens: Some(120_000),
+            total_cached_input_tokens: Some(40_000),
+            total_output_tokens: Some(5_000),
+        };
+
+        let request = codex_live_snapshot_to_harness_request(snapshot);
+        assert_eq!(request.context_pressure.recent_compaction_count, 2);
+        assert_eq!(request.progress.no_progress_iteration_count, 1);
+        assert!(request
+            .evidence_scope
+            .iter()
+            .any(|line| line.contains("continue_reason: PendingInput")));
     }
 }

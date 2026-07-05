@@ -24,8 +24,10 @@ use muldex_core::reasoning_harness::ProhibitionRule;
 use muldex_core::reasoning_harness::ReasoningHarnessRequest;
 use muldex_core::reasoning_harness::decide_reasoning_harness;
 use muldex_core::upstream_adapter::CodexBootstrapSnapshot;
+use muldex_core::upstream_adapter::CodexLiveContinuationSnapshot;
 use muldex_core::upstream_adapter::CodexSignalSnapshot;
 use muldex_core::upstream_adapter::codex_bootstrap_snapshot_to_harness_request;
+use muldex_core::upstream_adapter::codex_live_snapshot_to_harness_request;
 use muldex_core::upstream_adapter::codex_snapshot_to_harness_request;
 use std::fs;
 use std::path::PathBuf;
@@ -245,6 +247,22 @@ fn print_bootstrap_snapshot_summary(snapshot: &CodexBootstrapSnapshot) {
     println!("snapshot.tools_visible: {}", snapshot.tools_visible_count);
 }
 
+fn print_live_snapshot_summary(snapshot: &CodexLiveContinuationSnapshot) {
+    println!("snapshot.kind: codex-live");
+    println!("snapshot.thread_id: {}", snapshot.thread_id);
+    println!("snapshot.active_turn_present: {}", snapshot.active_turn_present);
+    println!("snapshot.pending_input_present: {}", snapshot.pending_input_present);
+    println!(
+        "snapshot.trigger_turn_mailbox_present: {}",
+        snapshot.trigger_turn_mailbox_present
+    );
+    println!(
+        "snapshot.auto_compact_window_number: {}",
+        snapshot.auto_compact_window_number
+    );
+    println!("snapshot.total_input_tokens: {:?}", snapshot.total_input_tokens);
+}
+
 fn build_workspace_request(
     workspace: PathBuf,
     objective: Option<String>,
@@ -323,11 +341,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let raw = fs::read_to_string(path)?;
             let request = match serde_json::from_str::<CodexSignalSnapshot>(&raw) {
                 Ok(snapshot) => codex_snapshot_to_harness_request(snapshot),
-                Err(_) => {
-                    let bootstrap: CodexBootstrapSnapshot = serde_json::from_str(&raw)?;
-                    print_bootstrap_snapshot_summary(&bootstrap);
-                    println!();
-                    codex_bootstrap_snapshot_to_harness_request(bootstrap)
+                Err(_) => match serde_json::from_str::<CodexLiveContinuationSnapshot>(&raw) {
+                    Ok(live) => {
+                        print_live_snapshot_summary(&live);
+                        println!();
+                        codex_live_snapshot_to_harness_request(live)
+                    }
+                    Err(_) => {
+                        let bootstrap: CodexBootstrapSnapshot = serde_json::from_str(&raw)?;
+                        print_bootstrap_snapshot_summary(&bootstrap);
+                        println!();
+                        codex_bootstrap_snapshot_to_harness_request(bootstrap)
+                    }
                 }
             };
             let decision = decide_reasoning_harness(&request);

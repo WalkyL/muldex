@@ -1,0 +1,10 @@
+{
+  "thread_id": "019f3228-c7e8-7283-803a-bcaf1b6872b4",
+  "active_turn_present": false,
+  "pending_input_present": false,
+  "trigger_turn_mailbox_present": false,
+  "auto_compact_window_number": 0,
+  "total_input_tokens": null,
+  "total_cached_input_tokens": null,
+  "total_output_tokens": null
+}
