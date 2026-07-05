@@ -188,7 +188,15 @@ mod tests {
             },
             post_compaction: crate::protocol::PostCompactionState::default(),
             runtime_mode: crate::protocol::RuntimeModeState::default(),
-        }
+            safety: crate::protocol::PermissionContextSnapshot {
+                sandbox_mode: crate::protocol::SandboxModeDescriptor::WorkspaceWrite,
+                approval_policy: crate::protocol::ApprovalPolicyDescriptor::OnRequest,
+                permission_profile_summary: "managed".to_string(),
+                network_access_enabled: false,
+                requires_explicit_approval_for_next_step: false,
+            },
+            codex_continuation: None,
+            }
     }
 
     fn sample_planner_request() -> PlannerRequest {
@@ -220,6 +228,14 @@ mod tests {
             },
             post_compaction: crate::protocol::PostCompactionState::default(),
             runtime_mode: crate::protocol::RuntimeModeState::default(),
+            safety: crate::protocol::PermissionContextSnapshot {
+                sandbox_mode: crate::protocol::SandboxModeDescriptor::WorkspaceWrite,
+                approval_policy: crate::protocol::ApprovalPolicyDescriptor::OnRequest,
+                permission_profile_summary: "managed".to_string(),
+                network_access_enabled: false,
+                requires_explicit_approval_for_next_step: false,
+            },
+            codex_continuation: None,
         }
     }
 

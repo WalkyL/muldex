@@ -3,13 +3,17 @@ use serde::Serialize;
 
 use crate::protocol::CapabilityRegistrySnapshot;
 use crate::protocol::CheckpointRef;
+use crate::protocol::CodexSessionContinuationSnapshot;
 use crate::protocol::ContextPressure;
+use crate::protocol::ApprovalPolicyDescriptor;
 use crate::protocol::ContinueReason;
+use crate::protocol::PermissionContextSnapshot;
 use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
 use crate::protocol::RecoveryReason;
 use crate::protocol::RecoverySnapshot;
 use crate::protocol::RuntimeModeState;
+use crate::protocol::SandboxModeDescriptor;
 use crate::protocol::SelfCorrectionState;
 use crate::protocol::StateChangeKind;
 use crate::reasoning_harness::EscalationPolicy;
@@ -146,6 +150,14 @@ pub fn codex_snapshot_to_harness_request(
                 })
                 .collect(),
         },
+        safety: PermissionContextSnapshot {
+            sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+            approval_policy: ApprovalPolicyDescriptor::OnRequest,
+            permission_profile_summary: "derived from codex signal snapshot".to_string(),
+            network_access_enabled: false,
+            requires_explicit_approval_for_next_step: false,
+        },
+        codex_continuation: None,
         context_pressure: ContextPressure {
             model_context_window: snapshot.model_context_window,
             active_context_tokens: snapshot.active_context_tokens,
@@ -234,6 +246,33 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
             mode_transition_pending_guidance: false,
             invoked_skills: Vec::new(),
         },
+        safety: PermissionContextSnapshot {
+            sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+            approval_policy: match snapshot.approval_policy.as_str() {
+                "OnRequest" => ApprovalPolicyDescriptor::OnRequest,
+                "Never" => ApprovalPolicyDescriptor::Never,
+                "UnlessTrusted" => ApprovalPolicyDescriptor::UnlessTrusted,
+                _ => ApprovalPolicyDescriptor::Unknown,
+            },
+            permission_profile_summary: snapshot.permission_profile,
+            network_access_enabled: false,
+            requires_explicit_approval_for_next_step: false,
+        },
+        codex_continuation: Some(CodexSessionContinuationSnapshot {
+            source_thread_id: snapshot.thread_id,
+            source_turn_id: snapshot.turn_id,
+            source_model: snapshot.model,
+            source_provider: snapshot.model_provider,
+            active_agent_mode: None,
+            safety: PermissionContextSnapshot {
+                sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+                approval_policy: ApprovalPolicyDescriptor::Unknown,
+                permission_profile_summary: "derived from bootstrap snapshot".to_string(),
+                network_access_enabled: false,
+                requires_explicit_approval_for_next_step: false,
+            },
+            reference_context_present: snapshot.reference_context_present,
+        }),
         context_pressure: ContextPressure {
             model_context_window: snapshot.model_context_window,
             active_context_tokens: None,

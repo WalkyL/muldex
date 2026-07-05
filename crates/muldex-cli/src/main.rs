@@ -8,13 +8,17 @@ use muldex_core::protocol::MediaAssetRef;
 use muldex_core::protocol::MediaContextEnvelope;
 use muldex_core::protocol::MediaKind;
 use muldex_core::protocol::MediaSource;
+use muldex_core::protocol::PermissionContextSnapshot;
 use muldex_core::protocol::PostCompactionState;
 use muldex_core::protocol::ProgressSnapshot;
 use muldex_core::protocol::RecoveryReason;
 use muldex_core::protocol::RecoverySnapshot;
 use muldex_core::protocol::RuntimeModeState;
+use muldex_core::protocol::SandboxModeDescriptor;
 use muldex_core::protocol::SelfCorrectionState;
 use muldex_core::protocol::SkillInvocationState;
+use muldex_core::protocol::ApprovalPolicyDescriptor;
+use muldex_core::protocol::CodexSessionContinuationSnapshot;
 use muldex_core::reasoning_harness::EscalationPolicy;
 use muldex_core::reasoning_harness::ProhibitionRule;
 use muldex_core::reasoning_harness::ReasoningHarnessRequest;
@@ -124,6 +128,28 @@ fn sample_request(scenario: Scenario) -> ReasoningHarnessRequest {
                 invoked_at_ms: Some(1_700_000_000_123),
             }],
         },
+        safety: PermissionContextSnapshot {
+            sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+            approval_policy: ApprovalPolicyDescriptor::OnRequest,
+            permission_profile_summary: "managed".to_string(),
+            network_access_enabled: false,
+            requires_explicit_approval_for_next_step: false,
+        },
+        codex_continuation: Some(CodexSessionContinuationSnapshot {
+            source_thread_id: "thread-1".to_string(),
+            source_turn_id: "turn-5".to_string(),
+            source_model: "gpt-5.4".to_string(),
+            source_provider: "llm-router".to_string(),
+            active_agent_mode: Some("build".to_string()),
+            safety: PermissionContextSnapshot {
+                sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+                approval_policy: ApprovalPolicyDescriptor::OnRequest,
+                permission_profile_summary: "managed".to_string(),
+                network_access_enabled: false,
+                requires_explicit_approval_for_next_step: false,
+            },
+            reference_context_present: true,
+        }),
         context_pressure: ContextPressure {
             model_context_window: Some(256_000),
             active_context_tokens: Some(140_000),

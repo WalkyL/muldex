@@ -232,6 +232,43 @@ pub enum SessionSurfaceKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SandboxModeDescriptor {
+    ReadOnly,
+    WorkspaceWrite,
+    FullAccess,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ApprovalPolicyDescriptor {
+    Never,
+    Ask,
+    OnRequest,
+    UnlessTrusted,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionContextSnapshot {
+    pub sandbox_mode: SandboxModeDescriptor,
+    pub approval_policy: ApprovalPolicyDescriptor,
+    pub permission_profile_summary: String,
+    pub network_access_enabled: bool,
+    pub requires_explicit_approval_for_next_step: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexSessionContinuationSnapshot {
+    pub source_thread_id: String,
+    pub source_turn_id: String,
+    pub source_model: String,
+    pub source_provider: String,
+    pub active_agent_mode: Option<String>,
+    pub safety: PermissionContextSnapshot,
+    pub reference_context_present: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionSurfaceDescriptor {
     pub surface_id: String,
     pub kind: SessionSurfaceKind,
@@ -422,6 +459,8 @@ pub struct ContinueRequest {
     pub self_correction: SelfCorrectionState,
     pub post_compaction: PostCompactionState,
     pub runtime_mode: RuntimeModeState,
+    pub safety: PermissionContextSnapshot,
+    pub codex_continuation: Option<CodexSessionContinuationSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -462,6 +501,8 @@ pub struct PlannerRequest {
     pub self_correction: SelfCorrectionState,
     pub post_compaction: PostCompactionState,
     pub runtime_mode: RuntimeModeState,
+    pub safety: PermissionContextSnapshot,
+    pub codex_continuation: Option<CodexSessionContinuationSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -542,6 +583,28 @@ mod tests {
                     invoked_at_ms: Some(1_700_000_000_123),
                 }],
             },
+            safety: PermissionContextSnapshot {
+                sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+                approval_policy: ApprovalPolicyDescriptor::OnRequest,
+                permission_profile_summary: "managed".to_string(),
+                network_access_enabled: false,
+                requires_explicit_approval_for_next_step: false,
+            },
+            codex_continuation: Some(CodexSessionContinuationSnapshot {
+                source_thread_id: "thread-1".to_string(),
+                source_turn_id: "turn-0".to_string(),
+                source_model: "gpt-5.4".to_string(),
+                source_provider: "llm-router".to_string(),
+                active_agent_mode: Some("build".to_string()),
+                safety: PermissionContextSnapshot {
+                    sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
+                    approval_policy: ApprovalPolicyDescriptor::OnRequest,
+                    permission_profile_summary: "managed".to_string(),
+                    network_access_enabled: false,
+                    requires_explicit_approval_for_next_step: false,
+                },
+                reference_context_present: true,
+            }),
         };
 
         let json = serde_json::to_string(&request).expect("serialize request");

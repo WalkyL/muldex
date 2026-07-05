@@ -3,9 +3,11 @@ use serde::Serialize;
 
 use crate::protocol::CapabilityRegistrySnapshot;
 use crate::protocol::CheckpointRef;
+use crate::protocol::CodexSessionContinuationSnapshot;
 use crate::protocol::ContinueMode;
 use crate::protocol::ContextPressure;
 use crate::protocol::MediaContextEnvelope;
+use crate::protocol::PermissionContextSnapshot;
 use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
 use crate::protocol::RecoverySnapshot;
@@ -44,6 +46,8 @@ pub struct ReasoningHarnessRequest {
     pub self_correction: SelfCorrectionState,
     pub post_compaction: PostCompactionState,
     pub runtime_mode: RuntimeModeState,
+    pub safety: PermissionContextSnapshot,
+    pub codex_continuation: Option<CodexSessionContinuationSnapshot>,
     pub context_pressure: ContextPressure,
     pub media_context: Vec<MediaContextEnvelope>,
     pub capability_registry: CapabilityRegistrySnapshot,
@@ -89,7 +93,8 @@ pub fn decide_reasoning_harness(request: &ReasoningHarnessRequest) -> ReasoningH
     let should_enter_self_correction = request.recovery.last_recovery_reason.is_some()
         && !request.recovery.last_recovery_had_progress
         && request.self_correction.correction_attempt_count
-            < request.escalation_policy.self_correction_limit;
+            < request.escalation_policy.self_correction_limit
+        && !request.safety.requires_explicit_approval_for_next_step;
 
     ReasoningHarnessDecision {
         mode: if should_enter_self_correction {
@@ -143,6 +148,14 @@ mod tests {
             },
             post_compaction: PostCompactionState::default(),
             runtime_mode: RuntimeModeState::default(),
+            safety: PermissionContextSnapshot {
+                sandbox_mode: crate::protocol::SandboxModeDescriptor::WorkspaceWrite,
+                approval_policy: crate::protocol::ApprovalPolicyDescriptor::OnRequest,
+                permission_profile_summary: "managed".to_string(),
+                network_access_enabled: false,
+                requires_explicit_approval_for_next_step: false,
+            },
+            codex_continuation: None,
             context_pressure: ContextPressure::default(),
             media_context: Vec::new(),
             capability_registry: CapabilityRegistrySnapshot::default(),
