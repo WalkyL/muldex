@@ -210,6 +210,10 @@ fn print_bootstrap_snapshot_summary(snapshot: &CodexBootstrapSnapshot) {
     println!("snapshot.model: {}", snapshot.model);
     println!("snapshot.provider: {}", snapshot.model_provider);
     println!("snapshot.mode: {}", snapshot.collaboration_mode);
+    println!("snapshot.personality: {:?}", snapshot.personality);
+    println!("snapshot.approval_policy: {}", snapshot.approval_policy);
+    println!("snapshot.service_tier: {:?}", snapshot.service_tier);
+    println!("snapshot.show_raw_agent_reasoning: {}", snapshot.show_raw_agent_reasoning);
     println!("snapshot.reference_context: {}", snapshot.reference_context_present);
     println!("snapshot.input_modalities: {:?}", snapshot.input_modalities);
     println!("snapshot.tools_visible: {}", snapshot.tools_visible_count);
