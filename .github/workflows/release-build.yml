@@ -82,7 +82,7 @@ jobs:
       - name: Verify Windows packaged artifact
         if: contains(matrix.target, 'windows')
         shell: pwsh
-        run: .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.zip -PlatformKind windows
+        run: '& .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.zip -PlatformKind windows'
 
       - name: Package Linux release artifact
         if: contains(matrix.target, 'linux')
@@ -92,7 +92,7 @@ jobs:
       - name: Verify Linux packaged artifact
         if: contains(matrix.target, 'linux')
         shell: pwsh
-        run: .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.tar.gz -PlatformKind unix
+        run: '& .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.tar.gz -PlatformKind unix'
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v4
@@ -130,7 +130,7 @@ jobs:
 
       - name: Verify macOS packaged artifact
         shell: pwsh
-        run: .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.tar.gz -PlatformKind unix
+        run: '& .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.tar.gz -PlatformKind unix'
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v4
