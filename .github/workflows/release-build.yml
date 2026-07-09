@@ -40,27 +40,13 @@ jobs:
 
   build-windows-linux-self-hosted:
     needs: validate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os_label: windows-x64
-            target: x86_64-pc-windows-msvc
-            artifact_name: muldex-x86_64-pc-windows-msvc
-          - os_label: windows-arm64
-            target: aarch64-pc-windows-msvc
-            artifact_name: muldex-aarch64-pc-windows-msvc
-          - os_label: linux-x64
-            target: x86_64-unknown-linux-gnu
-            artifact_name: muldex-x86_64-unknown-linux-gnu
-          - os_label: linux-arm64
-            target: aarch64-unknown-linux-gnu
-            artifact_name: muldex-aarch64-unknown-linux-gnu
     runs-on:
       - self-hosted
+      - Windows
+      - X64
       - muldex
       - build-host-192-168-1-52
-      - ${{ matrix.os_label }}
+      - local-windows-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,37 +54,53 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
 
-      - name: Build release binary
+      - name: Build Windows release binaries
         shell: pwsh
-        run: cargo build -p muldex-cli --release --target ${{ matrix.target }}
+        run: |
+          cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
+          cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
 
-      - name: Package Windows release artifact
-        if: contains(matrix.target, 'windows')
+      - name: Build Linux release binaries on the local Windows build host
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target ${{ matrix.target }} -ArtifactName ${{ matrix.artifact_name }}
+        run: |
+          cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
+          cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
 
-      - name: Verify Windows packaged artifact
-        if: contains(matrix.target, 'windows')
+      - name: Package Windows artifacts
         shell: pwsh
-        run: '& .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.zip -PlatformKind windows'
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target x86_64-pc-windows-msvc -ArtifactName muldex-x86_64-pc-windows-msvc
+          powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target aarch64-pc-windows-msvc -ArtifactName muldex-aarch64-pc-windows-msvc
 
-      - name: Package Linux release artifact
-        if: contains(matrix.target, 'linux')
+      - name: Verify Windows artifacts
+        shell: pwsh
+        run: |
+          & .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\muldex-x86_64-pc-windows-msvc.zip -PlatformKind windows
+          & .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\muldex-aarch64-pc-windows-msvc.zip -PlatformKind windows
+
+      - name: Package Linux artifacts
         shell: bash
-        run: bash ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
+        run: |
+          bash ./scripts/package-release-unix.sh x86_64-unknown-linux-gnu muldex-x86_64-unknown-linux-gnu
+          bash ./scripts/package-release-unix.sh aarch64-unknown-linux-gnu muldex-aarch64-unknown-linux-gnu
 
-      - name: Verify Linux packaged artifact
-        if: contains(matrix.target, 'linux')
+      - name: Verify Linux artifacts
         shell: bash
-        run: python3 ./scripts/verify-release-artifact.py --artifact-path ./target/release-package/${{ matrix.artifact_name }}.tar.gz --platform-kind unix
+        run: |
+          python3 ./scripts/verify-release-artifact.py --artifact-path ./target/release-package/muldex-x86_64-unknown-linux-gnu.tar.gz --platform-kind unix
+          python3 ./scripts/verify-release-artifact.py --artifact-path ./target/release-package/muldex-aarch64-unknown-linux-gnu.tar.gz --platform-kind unix
 
-      - name: Upload packaged release artifact
+      - name: Upload packaged self-hosted artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: target/release-package/${{ matrix.artifact_name }}*
+          name: muldex-self-hosted-release-assets
+          path: |
+            target/release-package/muldex-x86_64-pc-windows-msvc.zip
+            target/release-package/muldex-aarch64-pc-windows-msvc.zip
+            target/release-package/muldex-x86_64-unknown-linux-gnu.tar.gz
+            target/release-package/muldex-aarch64-unknown-linux-gnu.tar.gz
 
   build-macos-github-hosted:
     needs: validate

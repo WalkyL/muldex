@@ -33,6 +33,12 @@ Current intended build host:
 
 GitHub Actions should orchestrate release builds, but Windows and Linux compilation should resolve onto the build image or runner hosted on that machine rather than drift onto arbitrary public runners.
 
+Important current interpretation:
+
+- `.52` is a Windows self-hosted runner host
+- the Podman image on `.52` is the Linux build environment, not a separately registered Linux GitHub runner
+- Windows and Linux release jobs should therefore route to the same `.52` Windows runner and let the local build image determine the target build environment
+
 Why:
 
 - tighter control over toolchain drift
@@ -41,8 +47,8 @@ Why:
 
 Current runner expectation:
 
-- Windows x64 and arm64 through self-hosted Windows build infrastructure
-- Linux x64 and arm64 through self-hosted Linux build infrastructure
+- Windows x64 and arm64 through the self-hosted Windows runner on `.52`
+- Linux x64 and arm64 through the same `.52` Windows runner, using the local Podman build image as the Linux build environment
 
 Operational expectation:
 
