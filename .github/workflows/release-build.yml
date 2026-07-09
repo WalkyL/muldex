@@ -51,10 +51,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+      - name: Verify host-managed Rust toolchain
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo --version
+          rustup target add x86_64-pc-windows-msvc
+          rustup target add aarch64-pc-windows-msvc
+          rustup target add x86_64-unknown-linux-gnu
+          rustup target add aarch64-unknown-linux-gnu
 
       - name: Build Windows release binaries
         shell: pwsh
