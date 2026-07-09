@@ -87,7 +87,7 @@ jobs:
       - name: Package Linux release artifact
         if: contains(matrix.target, 'linux')
         shell: bash
-        run: ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
+        run: bash ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
 
       - name: Verify Linux packaged artifact
         if: contains(matrix.target, 'linux')
@@ -126,7 +126,7 @@ jobs:
         run: cargo build -p muldex-cli --release --target ${{ matrix.target }}
 
       - name: Package macOS release artifact
-        run: ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
+        run: bash ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
 
       - name: Verify macOS packaged artifact
         shell: pwsh
