@@ -1,0 +1,159 @@
+name: release-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag, for example v0.0.1"
+        required: true
+      publish_release:
+        description: "Upload packaged assets to the GitHub Release"
+        required: false
+        default: "true"
+  push:
+    tags:
+      - 'v*'
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate interactive shell
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\validate-interactive-shell.ps1
+
+      - name: Validate release tag input
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          if (-not $env:RELEASE_TAG) { throw 'missing RELEASE_TAG' }
+          if (-not $env:RELEASE_TAG.StartsWith('v')) { throw "release tag must start with v: $env:RELEASE_TAG" }
+
+  build-windows-linux-self-hosted:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_label: windows-x64
+            target: x86_64-pc-windows-msvc
+            artifact_name: muldex-x86_64-pc-windows-msvc
+          - os_label: windows-arm64
+            target: aarch64-pc-windows-msvc
+            artifact_name: muldex-aarch64-pc-windows-msvc
+          - os_label: linux-x64
+            target: x86_64-unknown-linux-gnu
+            artifact_name: muldex-x86_64-unknown-linux-gnu
+          - os_label: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            artifact_name: muldex-aarch64-unknown-linux-gnu
+    runs-on:
+      - self-hosted
+      - muldex
+      - build-host-192-168-1-52
+      - ${{ matrix.os_label }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build -p muldex-cli --release --target ${{ matrix.target }}
+
+      - name: Package Windows release artifact
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target ${{ matrix.target }} -ArtifactName ${{ matrix.artifact_name }}
+
+      - name: Verify Windows packaged artifact
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.zip -PlatformKind windows
+
+      - name: Package Linux release artifact
+        if: contains(matrix.target, 'linux')
+        shell: bash
+        run: ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
+
+      - name: Verify Linux packaged artifact
+        if: contains(matrix.target, 'linux')
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.tar.gz -PlatformKind unix
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/release-package/${{ matrix.artifact_name }}*
+
+  build-macos-github-hosted:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: muldex-x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            artifact_name: muldex-aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build -p muldex-cli --release --target ${{ matrix.target }}
+
+      - name: Package macOS release artifact
+        run: ./scripts/package-release-unix.sh ${{ matrix.target }} ${{ matrix.artifact_name }}
+
+      - name: Verify macOS packaged artifact
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\${{ matrix.artifact_name }}.tar.gz -PlatformKind unix
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/release-package/${{ matrix.artifact_name }}*
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release != 'false')
+    needs:
+      - build-windows-linux-self-hosted
+      - build-macos-github-hosted
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${RELEASE_TAG}" release-artifacts/**/* --clobber

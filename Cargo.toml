@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/muldex-core",
+    "crates/muldex-runtime",
     "crates/muldex-cli",
 ]
 resolver = "2"

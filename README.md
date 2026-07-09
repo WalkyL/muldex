@@ -38,6 +38,37 @@ The upstream `openai/codex` repository is large and tightly integrated. We want 
 
 `muldex` will stay Rust-first.
 
+Current implemented baseline:
+
+- `muldex-core` for protocol, harness, adapters, and sidecar seams
+- `muldex-runtime` for bounded runtime state transitions and run reports
+- `muldex-cli` for request ingestion, harness execution, and single-step runtime advancement
+
+See [docs/current-baseline.md](docs/current-baseline.md) for the current stable baseline.
+
+Quick validation:
+
+```powershell
+cargo test
+cargo run -p muldex-cli -- decide-sample --scenario healthy
+cargo run -p muldex-cli -- import-codex-snapshot --path examples/codex-bootstrap-snapshot.json
+```
+
+Documentation guide:
+
+- [docs/README.md](docs/README.md)
+- [docs/codex-tui-compatibility-matrix.md](docs/codex-tui-compatibility-matrix.md)
+- [docs/interactive-shell-guide.md](docs/interactive-shell-guide.md)
+- [docs/interactive-shell-validation.md](docs/interactive-shell-validation.md)
+- [docs/interactive-shell-release-checklist.md](docs/interactive-shell-release-checklist.md)
+- [docs/interactive-shell-trial-handoff.md](docs/interactive-shell-trial-handoff.md)
+- [docs/release-build-strategy.md](docs/release-build-strategy.md)
+- [docs/release-dry-run-plan.md](docs/release-dry-run-plan.md)
+- [docs/local-release-runbook.md](docs/local-release-runbook.md)
+- [docs/installing-muldex-cli.md](docs/installing-muldex-cli.md)
+- [docs/windows-terminal-performance.md](docs/windows-terminal-performance.md)
+- [docs/adr/README.md](docs/adr/README.md)
+
 Planned system shape:
 
 - Rust kernel for CLI, persistence, tool execution, sandbox, token accounting, telemetry, and scheduling

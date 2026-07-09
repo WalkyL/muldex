@@ -1,5 +1,9 @@
 # Implementation Plan
 
+Baseline reference:
+
+- `docs/current-baseline.md` describes the current implemented floor that future work should preserve unless intentionally revised.
+
 ## Phase 1: boundary-first skeleton
 
 ### Work item 1: Rust workspace skeleton
@@ -103,6 +107,15 @@ Acceptance:
 
 ## Phase 2: first runtime guards
 
+This phase now also carries a runtime-kernel direction sharpened by comparison with `jcode`.
+
+The next missing ingredients are not only more policies, but explicit runtime control primitives:
+
+- soft interrupts and safe-point injection
+- pending approval state and post-approval continuation behavior
+- execution-mode descriptors for interactive, resumed, and scheduled work
+- structured run and cycle summaries
+
 ### Work item 8: duplicate hook-injection suppression
 
 Deliverables:
@@ -164,3 +177,31 @@ Initial target files:
 - `codex-rs/core/src/tasks/mod.rs`
 - `codex-rs/core/src/session/turn.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs`
+
+## Current interactive shell product direction
+
+The current plan should now be read together with:
+
+- `docs/codex-tui-compatibility-matrix.md`
+- `docs/interactive-shell-guide.md`
+- `docs/interactive-shell-release-checklist.md`
+
+The practical product direction is no longer only a runtime/admin CLI.
+
+Current shell-facing implementation work now includes:
+
+- default `muldex` entry into an interactive shell
+- persisted shell sessions and resume flows
+- runtime-backed slash command compatibility slice
+- prompt history, reverse history search, and slash picker behavior
+- Windows Terminal redraw guardrails intended to avoid the "gets slower over time" failure mode common in terminal agent shells
+
+The next product-critical shell requirement is operator-managed LLM endpoint setup.
+
+Near-term shell planning should therefore also include:
+
+- persisted user-scoped `llm-router` configuration
+- shell-native configuration flow for host, port, and API key
+- startup-time detection of missing router configuration
+
+Near-term implementation planning should therefore treat the interactive shell as a first-class product surface rather than only an optional wrapper around daemon and runtime commands.

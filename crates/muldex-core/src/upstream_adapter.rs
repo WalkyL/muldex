@@ -5,13 +5,17 @@ use crate::protocol::CapabilityRegistrySnapshot;
 use crate::protocol::CheckpointRef;
 use crate::protocol::CodexSessionContinuationSnapshot;
 use crate::protocol::ContextPressure;
+use crate::protocol::ExecutionMode;
+use crate::protocol::InterruptQueueState;
 use crate::protocol::ApprovalPolicyDescriptor;
+use crate::protocol::PendingApprovalState;
 use crate::protocol::ContinueReason;
 use crate::protocol::PermissionContextSnapshot;
 use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
 use crate::protocol::RecoveryReason;
 use crate::protocol::RecoverySnapshot;
+use crate::protocol::RunReport;
 use crate::protocol::RuntimeModeState;
 use crate::protocol::SandboxModeDescriptor;
 use crate::protocol::SelfCorrectionState;
@@ -151,6 +155,8 @@ pub fn codex_snapshot_to_harness_request(
         runtime_mode: RuntimeModeState {
             active_agent_mode: snapshot.active_agent_mode,
             previous_agent_mode: snapshot.previous_agent_mode,
+            active_execution_mode: Some(ExecutionMode::Interactive),
+            previous_execution_mode: None,
             mode_transition_pending_guidance: snapshot.mode_transition_pending_guidance,
             invoked_skills: snapshot
                 .invoked_skills
@@ -162,6 +168,9 @@ pub fn codex_snapshot_to_harness_request(
                 })
                 .collect(),
         },
+        pending_approval: PendingApprovalState::default(),
+        interrupts: InterruptQueueState::default(),
+        last_run_report: None,
         safety: PermissionContextSnapshot {
             sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
             approval_policy: ApprovalPolicyDescriptor::OnRequest,
@@ -255,9 +264,26 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
         runtime_mode: RuntimeModeState {
             active_agent_mode: Some(snapshot.collaboration_mode),
             previous_agent_mode: None,
+            active_execution_mode: Some(ExecutionMode::Interactive),
+            previous_execution_mode: None,
             mode_transition_pending_guidance: false,
             invoked_skills: Vec::new(),
         },
+        pending_approval: PendingApprovalState::default(),
+        interrupts: InterruptQueueState::default(),
+        last_run_report: Some(RunReport {
+            run_id: format!("bootstrap:{}:{}", snapshot.thread_id, snapshot.turn_id),
+            thread_id: snapshot.thread_id.clone(),
+            objective: format!(
+                "continue useful work in workspace {} from codex bootstrap state",
+                snapshot.cwd
+            ),
+            execution_mode: ExecutionMode::Resumable,
+            outcome: crate::protocol::RunOutcome::InProgress,
+            rationale: "bootstrap snapshot establishes resumable runtime context".to_string(),
+            cycle_summary: None,
+            generated_at_ms: None,
+        }),
         safety: PermissionContextSnapshot {
             sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
             approval_policy: match snapshot.approval_policy.as_str() {
@@ -363,6 +389,18 @@ pub fn codex_live_snapshot_to_harness_request(
             last_compaction_checkpoint_id: None,
         },
         runtime_mode: RuntimeModeState::default(),
+        pending_approval: PendingApprovalState::default(),
+        interrupts: InterruptQueueState::default(),
+        last_run_report: Some(RunReport {
+            run_id: format!("live:{}", snapshot.thread_id),
+            thread_id: snapshot.thread_id.clone(),
+            objective: "decide whether the live continuation state should keep running".to_string(),
+            execution_mode: ExecutionMode::Resumable,
+            outcome: crate::protocol::RunOutcome::InProgress,
+            rationale: "live snapshot captured bounded continuation state".to_string(),
+            cycle_summary: None,
+            generated_at_ms: None,
+        }),
         safety: PermissionContextSnapshot {
             sandbox_mode: SandboxModeDescriptor::Unknown,
             approval_policy: ApprovalPolicyDescriptor::Unknown,

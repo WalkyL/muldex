@@ -10,5 +10,11 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
 muldex-core = { path = "../muldex-core" }
+muldex-runtime = { path = "../muldex-runtime" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+portable-pty = "0.9"

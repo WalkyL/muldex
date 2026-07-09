@@ -101,6 +101,9 @@ mod tests {
     use crate::protocol::ContinueMode;
     use crate::protocol::ContinueReason;
     use crate::protocol::ContinueRequest;
+    use crate::protocol::ExecutionMode;
+    use crate::protocol::InterruptQueueState;
+    use crate::protocol::PendingApprovalState;
     use crate::protocol::PlannerRequest;
     use crate::protocol::StateChangeKind;
     use async_trait::async_trait;
@@ -123,6 +126,9 @@ mod tests {
                             .continue_request
                             .as_ref()
                             .and_then(|r| r.working_hypothesis.clone()),
+                        pause_for_approval: false,
+                        consume_interrupts_now: false,
+                        may_continue_other_work: true,
                         suppress_duplicate_injection: false,
                         downgrade_trigger_turn: false,
                         request_compaction: false,
@@ -187,7 +193,13 @@ mod tests {
                 last_correction_had_progress: false,
             },
             post_compaction: crate::protocol::PostCompactionState::default(),
-            runtime_mode: crate::protocol::RuntimeModeState::default(),
+            runtime_mode: crate::protocol::RuntimeModeState {
+                active_execution_mode: Some(ExecutionMode::Interactive),
+                ..crate::protocol::RuntimeModeState::default()
+            },
+            pending_approval: PendingApprovalState::default(),
+            interrupts: InterruptQueueState::default(),
+            last_run_report: None,
             safety: crate::protocol::PermissionContextSnapshot {
                 sandbox_mode: crate::protocol::SandboxModeDescriptor::WorkspaceWrite,
                 approval_policy: crate::protocol::ApprovalPolicyDescriptor::OnRequest,
@@ -196,7 +208,7 @@ mod tests {
                 requires_explicit_approval_for_next_step: false,
             },
             codex_continuation: None,
-            }
+        }
     }
 
     fn sample_planner_request() -> PlannerRequest {
@@ -227,7 +239,13 @@ mod tests {
                 last_correction_had_progress: false,
             },
             post_compaction: crate::protocol::PostCompactionState::default(),
-            runtime_mode: crate::protocol::RuntimeModeState::default(),
+            runtime_mode: crate::protocol::RuntimeModeState {
+                active_execution_mode: Some(ExecutionMode::Interactive),
+                ..crate::protocol::RuntimeModeState::default()
+            },
+            pending_approval: PendingApprovalState::default(),
+            interrupts: InterruptQueueState::default(),
+            last_run_report: None,
             safety: crate::protocol::PermissionContextSnapshot {
                 sandbox_mode: crate::protocol::SandboxModeDescriptor::WorkspaceWrite,
                 approval_policy: crate::protocol::ApprovalPolicyDescriptor::OnRequest,

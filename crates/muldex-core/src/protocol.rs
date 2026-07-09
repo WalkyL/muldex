@@ -92,8 +92,155 @@ pub struct SkillInvocationState {
 pub struct RuntimeModeState {
     pub active_agent_mode: Option<String>,
     pub previous_agent_mode: Option<String>,
+    pub active_execution_mode: Option<ExecutionMode>,
+    pub previous_execution_mode: Option<ExecutionMode>,
     pub mode_transition_pending_guidance: bool,
     pub invoked_skills: Vec<SkillInvocationState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PermissionActionKind {
+    CodeWrite,
+    ShellExecution,
+    NetworkAccess,
+    RemoteMutation,
+    ExternalCommunication,
+    ExecutionModeSwitch,
+    ModelSwitch,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PermissionUrgency {
+    Low,
+    Normal,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PermissionDecisionStatus {
+    Pending,
+    Approved,
+    Denied,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionRequest {
+    pub request_id: String,
+    pub action_kind: PermissionActionKind,
+    pub summary: String,
+    pub rationale: String,
+    pub urgency: PermissionUrgency,
+    pub wait_for_decision: bool,
+    pub requested_at_ms: Option<u64>,
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionDecision {
+    pub request_id: String,
+    pub status: PermissionDecisionStatus,
+    pub decided_at_ms: Option<u64>,
+    pub decided_by: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PendingApprovalState {
+    pub active_request: Option<PermissionRequest>,
+    pub recent_decision: Option<PermissionDecision>,
+    pub blocked_on_approval: bool,
+    pub may_continue_other_work: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum InterruptKind {
+    UserInput,
+    ApprovalDecision,
+    SidecarUpdate,
+    ToolResult,
+    PlanUpdate,
+    SystemNotification,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum InterruptInjectionMode {
+    ImmediateSafePoint,
+    NextTurn,
+    QueueOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingInterrupt {
+    pub interrupt_id: String,
+    pub kind: InterruptKind,
+    pub summary: String,
+    pub injection_mode: InterruptInjectionMode,
+    pub created_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct InterruptQueueState {
+    pub pending_interrupts: Vec<PendingInterrupt>,
+    pub safe_point_requested: bool,
+    pub last_interrupt_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RunOutcome {
+    InProgress,
+    WaitingForApproval,
+    Checkpointed,
+    HandedOff,
+    Stopped,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CycleSummary {
+    pub cycle_id: String,
+    pub summary: String,
+    pub completed_steps_delta: i32,
+    pub state_changes: Vec<StateChangeKind>,
+    pub checkpoint_created: bool,
+    pub approval_request_id: Option<String>,
+    pub pending_interrupt_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RetentionClass {
+    MustKeepExact,
+    MayStubIfUnchanged,
+    MaySummarize,
+    DropIfStale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompressionStub {
+    pub source_id: String,
+    pub same_hash: String,
+    pub unchanged_since: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompressedCycleSummary {
+    pub cycle_id: String,
+    pub retention_class: RetentionClass,
+    pub summary: Option<CycleSummary>,
+    pub stub: Option<CompressionStub>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunReport {
+    pub run_id: String,
+    pub thread_id: String,
+    pub objective: String,
+    pub execution_mode: ExecutionMode,
+    pub outcome: RunOutcome,
+    pub rationale: String,
+    pub cycle_summary: Option<CycleSummary>,
+    pub generated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -459,6 +606,9 @@ pub struct ContinueRequest {
     pub self_correction: SelfCorrectionState,
     pub post_compaction: PostCompactionState,
     pub runtime_mode: RuntimeModeState,
+    pub pending_approval: PendingApprovalState,
+    pub interrupts: InterruptQueueState,
+    pub last_run_report: Option<RunReport>,
     pub safety: PermissionContextSnapshot,
     pub codex_continuation: Option<CodexSessionContinuationSnapshot>,
 }
@@ -478,6 +628,9 @@ pub struct ContinueDecision {
     pub mode: ContinueMode,
     pub rationale: String,
     pub next_action: Option<String>,
+    pub pause_for_approval: bool,
+    pub consume_interrupts_now: bool,
+    pub may_continue_other_work: bool,
     pub suppress_duplicate_injection: bool,
     pub downgrade_trigger_turn: bool,
     pub request_compaction: bool,
@@ -501,6 +654,9 @@ pub struct PlannerRequest {
     pub self_correction: SelfCorrectionState,
     pub post_compaction: PostCompactionState,
     pub runtime_mode: RuntimeModeState,
+    pub pending_approval: PendingApprovalState,
+    pub interrupts: InterruptQueueState,
+    pub last_run_report: Option<RunReport>,
     pub safety: PermissionContextSnapshot,
     pub codex_continuation: Option<CodexSessionContinuationSnapshot>,
 }
@@ -576,6 +732,8 @@ mod tests {
             runtime_mode: RuntimeModeState {
                 active_agent_mode: Some("build".to_string()),
                 previous_agent_mode: Some("plan".to_string()),
+                active_execution_mode: Some(ExecutionMode::Interactive),
+                previous_execution_mode: Some(ExecutionMode::Resumable),
                 mode_transition_pending_guidance: false,
                 invoked_skills: vec![SkillInvocationState {
                     skill_id: "context-budget-gate".to_string(),
@@ -583,6 +741,56 @@ mod tests {
                     invoked_at_ms: Some(1_700_000_000_123),
                 }],
             },
+            pending_approval: PendingApprovalState {
+                active_request: Some(PermissionRequest {
+                    request_id: "approval-1".to_string(),
+                    action_kind: PermissionActionKind::RemoteMutation,
+                    summary: "create a pull request for the current branch".to_string(),
+                    rationale: "share the verified fix for human review".to_string(),
+                    urgency: PermissionUrgency::Normal,
+                    wait_for_decision: false,
+                    requested_at_ms: Some(1_700_000_000_234),
+                    expires_at_ms: None,
+                }),
+                recent_decision: Some(PermissionDecision {
+                    request_id: "approval-0".to_string(),
+                    status: PermissionDecisionStatus::Approved,
+                    decided_at_ms: Some(1_699_999_999_999),
+                    decided_by: Some("operator".to_string()),
+                    note: Some("deploy after tests pass".to_string()),
+                }),
+                blocked_on_approval: false,
+                may_continue_other_work: true,
+            },
+            interrupts: InterruptQueueState {
+                pending_interrupts: vec![PendingInterrupt {
+                    interrupt_id: "interrupt-1".to_string(),
+                    kind: InterruptKind::ApprovalDecision,
+                    summary: "approval decision arrived for deployment request".to_string(),
+                    injection_mode: InterruptInjectionMode::ImmediateSafePoint,
+                    created_at_ms: Some(1_700_000_000_345),
+                }],
+                safe_point_requested: true,
+                last_interrupt_at_ms: Some(1_700_000_000_345),
+            },
+            last_run_report: Some(RunReport {
+                run_id: "run-1".to_string(),
+                thread_id: "thread-1".to_string(),
+                objective: "fix the runtime loop".to_string(),
+                execution_mode: ExecutionMode::Interactive,
+                outcome: RunOutcome::Checkpointed,
+                rationale: "checkpoint after validated progress".to_string(),
+                cycle_summary: Some(CycleSummary {
+                    cycle_id: "cycle-7".to_string(),
+                    summary: "validated the loop detector and captured a checkpoint".to_string(),
+                    completed_steps_delta: 1,
+                    state_changes: vec![StateChangeKind::NewConfirmedFinding],
+                    checkpoint_created: true,
+                    approval_request_id: Some("approval-1".to_string()),
+                    pending_interrupt_count: 1,
+                }),
+                generated_at_ms: Some(1_700_000_000_456),
+            }),
             safety: PermissionContextSnapshot {
                 sandbox_mode: SandboxModeDescriptor::WorkspaceWrite,
                 approval_policy: ApprovalPolicyDescriptor::OnRequest,
@@ -702,5 +910,24 @@ mod tests {
         let decoded: ModelSelectionRequest =
             serde_json::from_str(&json).expect("deserialize model selection request");
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn compressed_cycle_summary_round_trip_json() {
+        let compressed = CompressedCycleSummary {
+            cycle_id: "cycle-9".to_string(),
+            retention_class: RetentionClass::MayStubIfUnchanged,
+            summary: None,
+            stub: Some(CompressionStub {
+                source_id: "cycle-8".to_string(),
+                same_hash: "abc123".to_string(),
+                unchanged_since: "cycle-8".to_string(),
+            }),
+        };
+
+        let json = serde_json::to_string(&compressed).expect("serialize compressed cycle summary");
+        let decoded: CompressedCycleSummary =
+            serde_json::from_str(&json).expect("deserialize compressed cycle summary");
+        assert_eq!(decoded, compressed);
     }
 }

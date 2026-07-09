@@ -3,6 +3,9 @@ use serde::Serialize;
 
 use crate::protocol::CapabilityRegistrySnapshot;
 use crate::protocol::CheckpointRef;
+use crate::protocol::InterruptQueueState;
+use crate::protocol::InterruptInjectionMode;
+use crate::protocol::PendingApprovalState;
 use crate::protocol::CodexSessionContinuationSnapshot;
 use crate::protocol::ContinueMode;
 use crate::protocol::ContextPressure;
@@ -11,6 +14,7 @@ use crate::protocol::PermissionContextSnapshot;
 use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
 use crate::protocol::RecoverySnapshot;
+use crate::protocol::RunReport;
 use crate::protocol::RuntimeModeState;
 use crate::protocol::SelfCorrectionState;
 
@@ -46,6 +50,9 @@ pub struct ReasoningHarnessRequest {
     pub self_correction: SelfCorrectionState,
     pub post_compaction: PostCompactionState,
     pub runtime_mode: RuntimeModeState,
+    pub pending_approval: PendingApprovalState,
+    pub interrupts: InterruptQueueState,
+    pub last_run_report: Option<RunReport>,
     pub safety: PermissionContextSnapshot,
     pub codex_continuation: Option<CodexSessionContinuationSnapshot>,
     pub context_pressure: ContextPressure,
@@ -60,6 +67,9 @@ pub struct ReasoningHarnessDecision {
     pub rationale: String,
     pub should_checkpoint: bool,
     pub should_enter_self_correction: bool,
+    pub pause_for_approval: bool,
+    pub consume_interrupts_now: bool,
+    pub may_continue_other_work: bool,
     pub violated_rules: Vec<ProhibitionRule>,
 }
 
@@ -80,12 +90,38 @@ pub fn decide_reasoning_harness(request: &ReasoningHarnessRequest) -> ReasoningH
         violated_rules.push(ProhibitionRule::NoFakeProgress);
     }
 
+    if request.pending_approval.blocked_on_approval {
+        return ReasoningHarnessDecision {
+            mode: if request.pending_approval.may_continue_other_work {
+                ContinueMode::QueueOnly
+            } else {
+                ContinueMode::Handoff
+            },
+            rationale: if request.pending_approval.may_continue_other_work {
+                "pause risky continuation and queue follow-up while awaiting approval"
+                    .to_string()
+            } else {
+                "handoff because the run is blocked on approval and cannot continue other work"
+                    .to_string()
+            },
+            should_checkpoint: request.escalation_policy.request_checkpoint_before_handoff,
+            should_enter_self_correction: false,
+            pause_for_approval: true,
+            consume_interrupts_now: false,
+            may_continue_other_work: request.pending_approval.may_continue_other_work,
+            violated_rules,
+        };
+    }
+
     if no_progress_violation || self_correction_violation || compaction_violation {
         return ReasoningHarnessDecision {
             mode: ContinueMode::Handoff,
             rationale: "reasoning harness blocked further low-value continuation".to_string(),
             should_checkpoint: request.escalation_policy.request_checkpoint_before_handoff,
             should_enter_self_correction: false,
+            pause_for_approval: false,
+            consume_interrupts_now: false,
+            may_continue_other_work: false,
             violated_rules,
         };
     }
@@ -96,20 +132,37 @@ pub fn decide_reasoning_harness(request: &ReasoningHarnessRequest) -> ReasoningH
             < request.escalation_policy.self_correction_limit
         && !request.safety.requires_explicit_approval_for_next_step;
 
+    let has_immediate_safe_point_interrupt = request
+        .interrupts
+        .pending_interrupts
+        .iter()
+        .any(|interrupt| {
+            interrupt.injection_mode == InterruptInjectionMode::ImmediateSafePoint
+        });
+
+    let mode = if should_enter_self_correction || has_immediate_safe_point_interrupt {
+        ContinueMode::SameTurn
+    } else {
+        ContinueMode::NextTurn
+    };
+
+    let rationale = if should_enter_self_correction {
+        "enter self-correction under harness policy".to_string()
+    } else if has_immediate_safe_point_interrupt {
+        "continue at the current safe point to absorb queued interrupt state".to_string()
+    } else {
+        "continue under harness policy".to_string()
+    };
+
     ReasoningHarnessDecision {
-        mode: if should_enter_self_correction {
-            ContinueMode::SameTurn
-        } else {
-            ContinueMode::NextTurn
-        },
-        rationale: if should_enter_self_correction {
-            "enter self-correction under harness policy".to_string()
-        } else {
-            "continue under harness policy".to_string()
-        },
+        mode,
+        rationale,
         should_checkpoint: request.progress.completed_steps > 0
             && request.progress.completed_steps % 5 == 0,
         should_enter_self_correction,
+        pause_for_approval: false,
+        consume_interrupts_now: has_immediate_safe_point_interrupt,
+        may_continue_other_work: true,
         violated_rules,
     }
 }
@@ -148,6 +201,9 @@ mod tests {
             },
             post_compaction: PostCompactionState::default(),
             runtime_mode: RuntimeModeState::default(),
+            pending_approval: PendingApprovalState::default(),
+            interrupts: InterruptQueueState::default(),
+            last_run_report: None,
             safety: PermissionContextSnapshot {
                 sandbox_mode: crate::protocol::SandboxModeDescriptor::WorkspaceWrite,
                 approval_policy: crate::protocol::ApprovalPolicyDescriptor::OnRequest,
@@ -190,5 +246,70 @@ mod tests {
         let decision = decide_reasoning_harness(&request);
         assert_eq!(decision.mode, ContinueMode::SameTurn);
         assert!(decision.should_enter_self_correction);
+    }
+
+    #[test]
+    fn harness_queues_when_waiting_on_approval_but_other_work_is_allowed() {
+        let mut request = base_request();
+        request.pending_approval.active_request = Some(crate::protocol::PermissionRequest {
+            request_id: "approval-1".to_string(),
+            action_kind: crate::protocol::PermissionActionKind::RemoteMutation,
+            summary: "open a pull request".to_string(),
+            rationale: "publish the validated fix for review".to_string(),
+            urgency: crate::protocol::PermissionUrgency::Normal,
+            wait_for_decision: false,
+            requested_at_ms: Some(1),
+            expires_at_ms: None,
+        });
+        request.pending_approval.blocked_on_approval = true;
+        request.pending_approval.may_continue_other_work = true;
+
+        let decision = decide_reasoning_harness(&request);
+        assert_eq!(decision.mode, ContinueMode::QueueOnly);
+        assert!(!decision.should_enter_self_correction);
+        assert!(decision.pause_for_approval);
+        assert!(decision.may_continue_other_work);
+    }
+
+    #[test]
+    fn harness_handoffs_when_waiting_on_approval_and_no_other_work_is_allowed() {
+        let mut request = base_request();
+        request.pending_approval.active_request = Some(crate::protocol::PermissionRequest {
+            request_id: "approval-2".to_string(),
+            action_kind: crate::protocol::PermissionActionKind::ExternalCommunication,
+            summary: "message the operator".to_string(),
+            rationale: "cannot continue until the operator responds".to_string(),
+            urgency: crate::protocol::PermissionUrgency::High,
+            wait_for_decision: true,
+            requested_at_ms: Some(1),
+            expires_at_ms: None,
+        });
+        request.pending_approval.blocked_on_approval = true;
+        request.pending_approval.may_continue_other_work = false;
+
+        let decision = decide_reasoning_harness(&request);
+        assert_eq!(decision.mode, ContinueMode::Handoff);
+        assert!(decision.should_checkpoint);
+        assert!(decision.pause_for_approval);
+        assert!(!decision.may_continue_other_work);
+    }
+
+    #[test]
+    fn harness_prefers_same_turn_for_immediate_safe_point_interrupts() {
+        let mut request = base_request();
+        request.interrupts.pending_interrupts.push(crate::protocol::PendingInterrupt {
+            interrupt_id: "interrupt-1".to_string(),
+            kind: crate::protocol::InterruptKind::ApprovalDecision,
+            summary: "approval decision arrived".to_string(),
+            injection_mode: crate::protocol::InterruptInjectionMode::ImmediateSafePoint,
+            created_at_ms: Some(1),
+        });
+
+        let decision = decide_reasoning_harness(&request);
+        assert_eq!(decision.mode, ContinueMode::SameTurn);
+        assert!(decision.consume_interrupts_now);
+        assert!(decision
+            .rationale
+            .contains("safe point"));
     }
 }
