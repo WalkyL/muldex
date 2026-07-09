@@ -92,7 +92,7 @@ jobs:
       - name: Verify Linux packaged artifact
         if: contains(matrix.target, 'linux')
         shell: bash
-        run: pwsh -File ./scripts/verify-release-artifact.ps1 -ArtifactPath ./target/release-package/${{ matrix.artifact_name }}.tar.gz -PlatformKind unix
+        run: python3 ./scripts/verify-release-artifact.py --artifact-path ./target/release-package/${{ matrix.artifact_name }}.tar.gz --platform-kind unix
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v4
@@ -130,7 +130,7 @@ jobs:
 
       - name: Verify macOS packaged artifact
         shell: bash
-        run: pwsh -File ./scripts/verify-release-artifact.ps1 -ArtifactPath ./target/release-package/${{ matrix.artifact_name }}.tar.gz -PlatformKind unix
+        run: python3 ./scripts/verify-release-artifact.py --artifact-path ./target/release-package/${{ matrix.artifact_name }}.tar.gz --platform-kind unix
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v4
