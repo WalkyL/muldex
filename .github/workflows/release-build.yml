@@ -64,14 +64,14 @@ jobs:
       - name: Build Windows release binaries
         shell: pwsh
         run: |
-          cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
-          cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
+          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-windows-x64 cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
+          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-windows-arm64 cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
 
       - name: Build Linux release binaries on the local Windows build host
         shell: pwsh
         run: |
-          cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
-          cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
+          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-linux-x64 cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
+          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-linux-arm64 cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
 
       - name: Package Windows artifacts
         shell: pwsh
