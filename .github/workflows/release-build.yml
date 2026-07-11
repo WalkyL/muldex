@@ -51,13 +51,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Windows release binaries
+      - name: Verify host-managed Rust toolchain
         shell: pwsh
         run: |
-          product-manager-agent build-container-run-once config/products.example.json muldex release-windows-x64 "cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc"
-          product-manager-agent build-container-run-once config/products.example.json muldex release-windows-arm64 "cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc"
+          rustc --version
+          cargo --version
+          rustup target add x86_64-pc-windows-msvc
+          rustup target add aarch64-pc-windows-msvc
 
-      - name: Build Linux release binaries
+      - name: Build Windows release binaries (host-direct per PMA hybrid model)
+        shell: pwsh
+        run: |
+          cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
+          cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
+
+      - name: Build Linux release binaries (PMA build container)
         shell: pwsh
         run: |
           product-manager-agent build-container-run-once config/products.example.json muldex release-linux-x64 "cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu"
