@@ -3114,6 +3114,7 @@ fn run_interactive_shell(initial_prompt: Option<String>) -> Result<(), Box<dyn s
             let bytes = stdin.read_line(&mut line)?;
             if bytes == 0 {
                 println!("leaving muldex interactive shell");
+                println!("To continue this session, run muldex resume {session_id}");
                 break;
             }
             Some(parse_interactive_shell_input(&line))
@@ -3136,6 +3137,7 @@ fn run_interactive_shell(initial_prompt: Option<String>) -> Result<(), Box<dyn s
             InteractiveShellInput::Empty => {}
             InteractiveShellInput::Exit => {
                 println!("leaving muldex interactive shell");
+                println!("To continue this session, run muldex resume {session_id}");
                 break;
             }
             InteractiveShellInput::Help => {
