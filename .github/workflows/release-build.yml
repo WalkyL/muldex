@@ -51,27 +51,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify host-managed Rust toolchain
-        shell: pwsh
-        run: |
-          rustc --version
-          cargo --version
-          rustup target add x86_64-pc-windows-msvc
-          rustup target add aarch64-pc-windows-msvc
-          rustup target add x86_64-unknown-linux-gnu
-          rustup target add aarch64-unknown-linux-gnu
-
       - name: Build Windows release binaries
         shell: pwsh
         run: |
-          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-windows-x64 cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
-          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-windows-arm64 cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
+          product-manager-agent build-container-run-once config/products.example.json muldex release-windows-x64 "cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc"
+          product-manager-agent build-container-run-once config/products.example.json muldex release-windows-arm64 "cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc"
 
-      - name: Build Linux release binaries on the local Windows build host
+      - name: Build Linux release binaries
         shell: pwsh
         run: |
-          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-linux-x64 cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
-          cargo run --manifest-path D:\workspaces\product-manager-agent\Cargo.toml -- build-container-run-once D:\workspaces\product-manager-agent\config\products.example.json muldex release-linux-arm64 cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
+          product-manager-agent build-container-run-once config/products.example.json muldex release-linux-x64 "cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu"
+          product-manager-agent build-container-run-once config/products.example.json muldex release-linux-arm64 "cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu"
 
       - name: Package Windows artifacts
         shell: pwsh
