@@ -3,13 +3,13 @@ use serde::Serialize;
 
 use crate::protocol::CapabilityRegistrySnapshot;
 use crate::protocol::CheckpointRef;
-use crate::protocol::InterruptQueueState;
-use crate::protocol::InterruptInjectionMode;
-use crate::protocol::PendingApprovalState;
 use crate::protocol::CodexSessionContinuationSnapshot;
-use crate::protocol::ContinueMode;
 use crate::protocol::ContextPressure;
+use crate::protocol::ContinueMode;
+use crate::protocol::InterruptInjectionMode;
+use crate::protocol::InterruptQueueState;
 use crate::protocol::MediaContextEnvelope;
+use crate::protocol::PendingApprovalState;
 use crate::protocol::PermissionContextSnapshot;
 use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
@@ -74,8 +74,8 @@ pub struct ReasoningHarnessDecision {
 }
 
 pub fn decide_reasoning_harness(request: &ReasoningHarnessRequest) -> ReasoningHarnessDecision {
-    let no_progress_violation = request.progress.no_progress_iteration_count
-        >= request.escalation_policy.no_progress_limit;
+    let no_progress_violation =
+        request.progress.no_progress_iteration_count >= request.escalation_policy.no_progress_limit;
     let self_correction_violation = request.self_correction.correction_attempt_count
         >= request.escalation_policy.self_correction_limit;
     let compaction_violation = request.context_pressure.recent_compaction_count
@@ -98,8 +98,7 @@ pub fn decide_reasoning_harness(request: &ReasoningHarnessRequest) -> ReasoningH
                 ContinueMode::Handoff
             },
             rationale: if request.pending_approval.may_continue_other_work {
-                "pause risky continuation and queue follow-up while awaiting approval"
-                    .to_string()
+                "pause risky continuation and queue follow-up while awaiting approval".to_string()
             } else {
                 "handoff because the run is blocked on approval and cannot continue other work"
                     .to_string()
@@ -136,9 +135,7 @@ pub fn decide_reasoning_harness(request: &ReasoningHarnessRequest) -> ReasoningH
         .interrupts
         .pending_interrupts
         .iter()
-        .any(|interrupt| {
-            interrupt.injection_mode == InterruptInjectionMode::ImmediateSafePoint
-        });
+        .any(|interrupt| interrupt.injection_mode == InterruptInjectionMode::ImmediateSafePoint);
 
     let mode = if should_enter_self_correction || has_immediate_safe_point_interrupt {
         ContinueMode::SameTurn
@@ -232,9 +229,11 @@ mod tests {
         let decision = decide_reasoning_harness(&request);
         assert_eq!(decision.mode, ContinueMode::Handoff);
         assert!(decision.should_checkpoint);
-        assert!(decision
-            .violated_rules
-            .contains(&ProhibitionRule::NoRepeatedNoProgressContinuation));
+        assert!(
+            decision
+                .violated_rules
+                .contains(&ProhibitionRule::NoRepeatedNoProgressContinuation)
+        );
     }
 
     #[test]
@@ -297,19 +296,20 @@ mod tests {
     #[test]
     fn harness_prefers_same_turn_for_immediate_safe_point_interrupts() {
         let mut request = base_request();
-        request.interrupts.pending_interrupts.push(crate::protocol::PendingInterrupt {
-            interrupt_id: "interrupt-1".to_string(),
-            kind: crate::protocol::InterruptKind::ApprovalDecision,
-            summary: "approval decision arrived".to_string(),
-            injection_mode: crate::protocol::InterruptInjectionMode::ImmediateSafePoint,
-            created_at_ms: Some(1),
-        });
+        request
+            .interrupts
+            .pending_interrupts
+            .push(crate::protocol::PendingInterrupt {
+                interrupt_id: "interrupt-1".to_string(),
+                kind: crate::protocol::InterruptKind::ApprovalDecision,
+                summary: "approval decision arrived".to_string(),
+                injection_mode: crate::protocol::InterruptInjectionMode::ImmediateSafePoint,
+                created_at_ms: Some(1),
+            });
 
         let decision = decide_reasoning_harness(&request);
         assert_eq!(decision.mode, ContinueMode::SameTurn);
         assert!(decision.consume_interrupts_now);
-        assert!(decision
-            .rationale
-            .contains("safe point"));
+        assert!(decision.rationale.contains("safe point"));
     }
 }

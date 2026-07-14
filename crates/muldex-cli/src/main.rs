@@ -1,15 +1,22 @@
 use clap::Parser;
 use clap::Subcommand;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use muldex_core::provider::MuldexConfig;
+use muldex_core::provider::ProviderConfig;
+use muldex_core::provider::ProviderMessageRole;
+use muldex_core::provider::ProviderTurnMessage;
+use muldex_core::provider::resolve_provider_config;
+use notify::{RecommendedWatcher, Watcher, Config as NotifyConfig, Event as NotifyEvent, EventKind};
+use muldex_core::protocol::ApprovalPolicyDescriptor;
 use muldex_core::protocol::CapabilityRegistrySnapshot;
+use muldex_core::protocol::CheckpointRef;
+use muldex_core::protocol::CodexSessionContinuationSnapshot;
+use muldex_core::protocol::ContextPressure;
 use muldex_core::protocol::ContinueDecision;
+use muldex_core::protocol::ContinueMode;
 use muldex_core::protocol::ContinueReason;
 use muldex_core::protocol::ContinueRequest;
 use muldex_core::protocol::CycleSummary;
-use muldex_core::protocol::CheckpointRef;
-use muldex_core::protocol::ContextPressure;
-use muldex_core::protocol::ContinueMode;
 use muldex_core::protocol::ExecutionMode;
 use muldex_core::protocol::InterruptInjectionMode;
 use muldex_core::protocol::InterruptKind;
@@ -21,9 +28,9 @@ use muldex_core::protocol::MediaSource;
 use muldex_core::protocol::PendingApprovalState;
 use muldex_core::protocol::PendingInterrupt;
 use muldex_core::protocol::PermissionActionKind;
+use muldex_core::protocol::PermissionContextSnapshot;
 use muldex_core::protocol::PermissionDecision;
 use muldex_core::protocol::PermissionDecisionStatus;
-use muldex_core::protocol::PermissionContextSnapshot;
 use muldex_core::protocol::PermissionRequest;
 use muldex_core::protocol::PermissionUrgency;
 use muldex_core::protocol::PostCompactionState;
@@ -36,8 +43,6 @@ use muldex_core::protocol::RuntimeModeState;
 use muldex_core::protocol::SandboxModeDescriptor;
 use muldex_core::protocol::SelfCorrectionState;
 use muldex_core::protocol::SkillInvocationState;
-use muldex_core::protocol::ApprovalPolicyDescriptor;
-use muldex_core::protocol::CodexSessionContinuationSnapshot;
 use muldex_core::reasoning_harness::EscalationPolicy;
 use muldex_core::reasoning_harness::ProhibitionRule;
 use muldex_core::reasoning_harness::ReasoningHarnessRequest;
@@ -48,45 +53,132 @@ use muldex_core::upstream_adapter::CodexSignalSnapshot;
 use muldex_core::upstream_adapter::codex_bootstrap_snapshot_to_harness_request;
 use muldex_core::upstream_adapter::codex_live_snapshot_to_harness_request;
 use muldex_core::upstream_adapter::codex_snapshot_to_harness_request;
-use muldex_runtime::continuity::ExternalRuntimeSnapshot;
-use muldex_runtime::continuity::ReportExportMode;
-use muldex_runtime::continuity::export_session;
-use muldex_runtime::continuity::export_session_view;
-use muldex_runtime::continuity::export_host;
-use muldex_runtime::continuity::import_external_snapshot_as_runtime_state;
-use muldex_runtime::client_views::command_receipt_view;
-use muldex_runtime::client_views::command_envelope_view;
-use muldex_runtime::client_views::daemon_status_view;
+use muldex_runtime::client_policy::ClientAccessMode;
+use muldex_runtime::client_policy::client_command_allowed;
 use muldex_runtime::client_views::ClientCommandView;
+use muldex_runtime::client_views::command_envelope_view;
+use muldex_runtime::client_views::command_receipt_view;
+use muldex_runtime::client_views::daemon_status_view;
 use muldex_runtime::client_views::inspect_session_view;
 use muldex_runtime::client_views::project_client_command;
 use muldex_runtime::client_views::response_view;
 use muldex_runtime::client_views::session_list_view;
-use muldex_runtime::client_policy::ClientAccessMode;
-use muldex_runtime::client_policy::client_command_allowed;
+use muldex_runtime::continuity::ExternalRuntimeSnapshot;
+use muldex_runtime::continuity::ReportExportMode;
+use muldex_runtime::continuity::export_host;
+use muldex_runtime::continuity::export_session;
+use muldex_runtime::continuity::export_session_view;
+use muldex_runtime::continuity::import_external_snapshot_as_runtime_state;
 use muldex_runtime::daemon::RuntimeDaemon;
+use muldex_runtime::daemon_local::StaleOwnershipStatus;
 use muldex_runtime::daemon_transport::DaemonCommandEnvelope;
 use muldex_runtime::daemon_transport::FileCommandTransport;
 use muldex_runtime::host::RuntimeHost;
-use muldex_runtime::daemon_local::StaleOwnershipStatus;
-use muldex_runtime::runtime::RuntimeState;
-use muldex_runtime::runtime::RuntimeStepResult;
+use muldex_runtime::interactive_turn::InteractiveToolError;
+use muldex_runtime::interactive_turn::InteractiveToolExecutor;
+use muldex_runtime::interactive_turn::TurnExecutionRequest;
+use muldex_runtime::interactive_turn::UiEventListener;
+use muldex_runtime::interactive_turn::execute_interactive_turn;
+use muldex_runtime::responses_provider::ResponsesProvider;
+use muldex_runtime::ui_events::UiEvent;
 use muldex_runtime::runtime::RuntimeCommand;
 use muldex_runtime::runtime::RuntimeCommandResult;
 use muldex_runtime::runtime::RuntimeDriveResult;
-use muldex_runtime::runtime::RuntimeEvent;
 use muldex_runtime::runtime::RuntimeDriver;
+use muldex_runtime::runtime::RuntimeEvent;
 use muldex_runtime::runtime::RuntimePhase;
+use muldex_runtime::runtime::RuntimeState;
+use muldex_runtime::runtime::RuntimeStepResult;
 use serde::Deserialize;
 use serde::Serialize;
-use std::net::TcpStream;
-use std::net::ToSocketAddrs;
 use std::fs;
 use std::io;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::net::TcpStream;
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
+
+mod interactive_tui;
+
+static KEYMAP: RwLock<Option<Arc<interactive_tui::RuntimeKeymap>>> = RwLock::new(None);
+
+fn init_keymap() -> Arc<interactive_tui::RuntimeKeymap> {
+    let mut km = interactive_tui::RuntimeKeymap::defaults();
+    if let Err(e) = km.validate() {
+        eprintln!("keymap validation: {e}");
+    }
+    if let Some(config) = config::MuldexConfig::load() {
+        config.apply_keymap(&mut km);
+    }
+    let arc = Arc::new(km);
+    {
+        let mut guard = KEYMAP.write().unwrap();
+        *guard = Some(arc.clone());
+    }
+    arc
+}
+
+fn get_keymap() -> Arc<interactive_tui::RuntimeKeymap> {
+    KEYMAP.read().unwrap().as_ref().unwrap().clone()
+}
+
+fn reload_keymap() {
+    let mut km = interactive_tui::RuntimeKeymap::defaults();
+    if let Err(e) = km.validate() {
+        eprintln!("keymap validation: {e}");
+    }
+    if let Some(config) = config::MuldexConfig::load() {
+        config.apply_keymap(&mut km);
+    }
+    let arc = Arc::new(km);
+    let mut guard = KEYMAP.write().unwrap();
+    *guard = Some(arc);
+    eprintln!("keymap reloaded from config");
+}
+
+fn start_config_watcher() {
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Event>();
+    let mut watcher = match RecommendedWatcher::new(
+        move |res| {
+            if let Ok(event) = res {
+                let _ = tx.send(event);
+            }
+        },
+        NotifyConfig::default(),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("failed to create config watcher: {e}");
+            return;
+        }
+    };
+    
+    if let Some(path) = config::config_path() {
+        if let Some(parent) = path.parent() {
+            if watcher.watch(parent, notify::RecursiveMode::NonRecursive).is_ok() {
+                std::thread::spawn(move || {
+                    while let Ok(event) = rx.recv() {
+                        match event.kind {
+                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                                if event.paths.iter().any(|p| p.file_name().map(|n| n == "config.toml").unwrap_or(false)) {
+                                    std::thread::sleep(Duration::from_millis(50));
+                                    reload_keymap();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                return;
+            }
+        }
+    }
+    eprintln!("config hot-reload disabled: could not watch config directory");
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -178,6 +270,27 @@ struct InteractiveShellState {
     approval_mode: String,
     compact_count: u32,
     resume_count: u32,
+    #[serde(default)]
+    usage: ShellUsage,
+    #[serde(default)]
+    rate_limit: ShellRateLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct ShellUsage {
+    input_tokens: u64,
+    cached_input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+struct ShellRateLimit {
+    limit_requests: Option<u64>,
+    remaining_requests: Option<u64>,
+    limit_tokens: Option<u64>,
+    remaining_tokens: Option<u64>,
+    reset_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,40 +322,6 @@ struct InteractiveShellStore {
     schema_version: String,
     active_session_id: String,
     sessions: Vec<InteractiveShellSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-struct ProviderConfig {
-    kind: String,
-    host: Option<String>,
-    port: Option<u16>,
-    base_url: Option<String>,
-    api_key: Option<String>,
-    api_key_env: Option<String>,
-    default_model: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-struct LegacyLlmRouterConfig {
-    host: String,
-    port: u16,
-    api_key: String,
-    default_model: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-struct MuldexConfig {
-    schema_version: String,
-    #[serde(default)]
-    default_provider: Option<String>,
-    #[serde(default)]
-    providers: std::collections::BTreeMap<String, ProviderConfig>,
-    #[serde(default)]
-    llm_router: Option<LegacyLlmRouterConfig>,
-}
-
-struct RawModeGuard {
-    active: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -293,22 +372,11 @@ enum InteractiveKeyAction {
     RedrawFrame,
     Exit,
     Status,
+    ClearScreen,
+    OpenExternalEditor,
+    Copy,
+    Yank,
     Submit(InteractiveShellInput),
-}
-
-impl RawModeGuard {
-    fn activate() -> Result<Self, Box<dyn std::error::Error>> {
-        enable_raw_mode()?;
-        Ok(Self { active: true })
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        if self.active {
-            let _ = disable_raw_mode();
-        }
-    }
 }
 
 impl InteractivePromptBuffer {
@@ -448,6 +516,363 @@ impl InteractivePromptBuffer {
             self.text.drain(self.cursor..original_cursor);
         }
     }
+
+    fn row_col(&self) -> (usize, usize) {
+        let before = &self.text[..self.cursor];
+        let row = before.lines().count().saturating_sub(1);
+        let col = before.lines().last().map(|l| l.chars().count()).unwrap_or(0);
+        (row, col)
+    }
+
+    fn line_count(&self) -> usize {
+        if self.text.is_empty() {
+            1
+        } else {
+            self.text.lines().count()
+        }
+    }
+
+    fn line_at(&self, row: usize) -> &str {
+        self.text.lines().nth(row).unwrap_or("")
+    }
+
+    fn set_row_col(&mut self, row: usize, col: usize) {
+        let total = self.line_count();
+        let row = row.min(total.saturating_sub(1));
+        let line = self.line_at(row);
+        let col = col.min(line.chars().count());
+        let mut offset = 0;
+        for (i, l) in self.text.lines().enumerate() {
+            if i == row {
+                let byte = line.char_indices().nth(col).map(|(b, _)| b).unwrap_or(line.len());
+                offset += byte;
+                break;
+            }
+            offset += l.len() + 1;
+        }
+        self.cursor = offset.min(self.text.len());
+    }
+}
+
+// ---- Vim modal editing + kill/yank ring (opt-in via MULDEX_VIM=on) ----
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VimOp {
+    Delete,
+    Yank,
+}
+
+#[derive(Default)]
+struct VimState {
+    enabled: bool,
+    normal: bool,
+    pending: Option<VimOp>,
+    ring: Vec<String>,
+}
+
+impl VimState {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            normal: enabled,
+            pending: None,
+            ring: Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn vim_state() -> &'static Mutex<VimState> {
+    static VIM: OnceLock<Mutex<VimState>> = OnceLock::new();
+    VIM.get_or_init(|| {
+        Mutex::new(VimState::new(
+            std::env::var("MULDEX_VIM").as_deref() == Ok("on"),
+        ))
+    })
+}
+
+fn vim_word_start(text: &str, from: usize) -> usize {
+    let rest = &text[from..];
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    from + i.min(rest.len())
+}
+
+fn vim_word_end(text: &str, from: usize) -> usize {
+    let rest = &text[from..];
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return text.len();
+    }
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    from + i.min(rest.len())
+}
+
+fn vim_word_back(text: &str, from: usize) -> usize {
+    if from == 0 {
+        return 0;
+    }
+    let prefix = &text[..from];
+    let bytes = prefix.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    while i > 0 && !bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    i
+}
+
+fn vim_line_bounds(buffer: &InteractivePromptBuffer, row: usize) -> (usize, usize) {
+    let mut start = 0;
+    for (idx, l) in buffer.text.lines().enumerate() {
+        if idx == row {
+            break;
+        }
+        start += l.len() + 1;
+    }
+    let line = buffer.line_at(row);
+    let mut end = start + line.len();
+    let bytes = buffer.text.as_bytes();
+    if end < bytes.len() && bytes[end] == b'\n' {
+        end += 1;
+    } else if start > 0 && bytes[start - 1] == b'\n' {
+        return (start - 1, end);
+    }
+    (start, end)
+}
+
+fn vim_delete_range(buffer: &mut InteractivePromptBuffer, range: std::ops::Range<usize>, st: &mut VimState) {
+    if range.start < range.end && range.end <= buffer.text.len() {
+        let captured: String = buffer.text[range.clone()].to_string();
+        st.ring.push(captured);
+        if st.ring.len() > 16 {
+            st.ring.remove(0);
+        }
+        buffer.text.drain(range.clone());
+        buffer.cursor = range.start.min(buffer.text.len());
+    }
+}
+
+fn vim_yank_range(buffer: &InteractivePromptBuffer, range: std::ops::Range<usize>, st: &mut VimState) {
+    if range.end <= buffer.text.len() {
+        let captured: String = buffer.text[range].to_string();
+        st.ring.push(captured);
+        if st.ring.len() > 16 {
+            st.ring.remove(0);
+        }
+    }
+}
+
+fn vim_put(buffer: &mut InteractivePromptBuffer, st: &VimState, after: bool) {
+    if let Some(text) = st.ring.last() {
+        if after {
+            buffer.text.insert_str(buffer.cursor, text);
+            buffer.cursor = (buffer.cursor + text.len()).min(buffer.text.len());
+        } else {
+            buffer.text.insert_str(buffer.cursor, text);
+            // cursor stays at insertion start
+        }
+    }
+}
+
+fn vim_normal_key(
+    st: &mut VimState,
+    key: KeyEvent,
+    buffer: &mut InteractivePromptBuffer,
+) -> Option<InteractiveKeyAction> {
+    use KeyCode::*;
+    let action = match key.code {
+        Char('i') => {
+            st.normal = false;
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('a') => {
+            buffer.move_right();
+            st.normal = false;
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('A') => {
+            let (r, _) = buffer.row_col();
+            buffer.set_row_col(r, buffer.line_at(r).chars().count());
+            st.normal = false;
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('I') => {
+            let (r, _) = buffer.row_col();
+            buffer.set_row_col(r, 0);
+            st.normal = false;
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('o') => {
+            let (r, _) = buffer.row_col();
+            buffer.set_row_col(r, buffer.line_at(r).chars().count());
+            buffer.insert_char('\n');
+            st.normal = false;
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('O') => {
+            let (r, _) = buffer.row_col();
+            buffer.set_row_col(r, 0);
+            buffer.insert_char('\n');
+            let (r2, _) = buffer.row_col();
+            buffer.set_row_col(r2.saturating_sub(1), 0);
+            st.normal = false;
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('h') => {
+            buffer.move_left();
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('l') => {
+            buffer.move_right();
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('j') => {
+            let (r, c) = buffer.row_col();
+            buffer.set_row_col(r + 1, c);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('k') => {
+            let (r, c) = buffer.row_col();
+            buffer.set_row_col(r.saturating_sub(1), c);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('w') => {
+            if st.pending == Some(VimOp::Delete) {
+                let end = vim_word_start(&buffer.text, buffer.cursor);
+                vim_delete_range(buffer, buffer.cursor..end, st);
+                st.pending = None;
+            } else if st.pending == Some(VimOp::Yank) {
+                let end = vim_word_start(&buffer.text, buffer.cursor);
+                vim_yank_range(buffer, buffer.cursor..end, st);
+                st.pending = None;
+            } else {
+                buffer.cursor = vim_word_start(&buffer.text, buffer.cursor).min(buffer.text.len());
+            }
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('e') => {
+            if st.pending == Some(VimOp::Delete) {
+                let end = vim_word_end(&buffer.text, buffer.cursor);
+                vim_delete_range(buffer, buffer.cursor..end, st);
+                st.pending = None;
+            } else if st.pending == Some(VimOp::Yank) {
+                let end = vim_word_end(&buffer.text, buffer.cursor);
+                vim_yank_range(buffer, buffer.cursor..end, st);
+                st.pending = None;
+            } else {
+                buffer.cursor = vim_word_end(&buffer.text, buffer.cursor).min(buffer.text.len());
+            }
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('b') => {
+            if st.pending == Some(VimOp::Delete) {
+                let start = vim_word_back(&buffer.text, buffer.cursor);
+                vim_delete_range(buffer, start..buffer.cursor, st);
+                st.pending = None;
+            } else if st.pending == Some(VimOp::Yank) {
+                let start = vim_word_back(&buffer.text, buffer.cursor);
+                vim_yank_range(buffer, start..buffer.cursor, st);
+                st.pending = None;
+            } else {
+                buffer.cursor = vim_word_back(&buffer.text, buffer.cursor);
+            }
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('0') => {
+            let (r, _) = buffer.row_col();
+            buffer.set_row_col(r, 0);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('$') => {
+            let (r, _) = buffer.row_col();
+            buffer.set_row_col(r, buffer.line_at(r).chars().count());
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('G') => {
+            buffer.cursor = buffer.text.len();
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('x') => {
+            vim_delete_range(buffer, buffer.cursor..buffer.cursor.saturating_add(1), st);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('X') => {
+            let start = buffer.cursor.saturating_sub(1);
+            vim_delete_range(buffer, start..buffer.cursor, st);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('d') => {
+            if st.pending == Some(VimOp::Delete) {
+                let (s, e) = vim_line_bounds(buffer, buffer.row_col().0);
+                vim_delete_range(buffer, s..e, st);
+                st.pending = None;
+            } else {
+                st.pending = Some(VimOp::Delete);
+            }
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('y') => {
+            if st.pending == Some(VimOp::Yank) {
+                let (s, e) = vim_line_bounds(buffer, buffer.row_col().0);
+                let line_len = buffer.line_at(buffer.row_col().0).chars().count();
+                vim_yank_range(buffer, s..s + line_len, st);
+                st.pending = None;
+            } else {
+                st.pending = Some(VimOp::Yank);
+            }
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('p') => {
+            vim_put(buffer, st, true);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Char('P') => {
+            vim_put(buffer, st, false);
+            InteractiveKeyAction::RedrawFrame
+        }
+        Esc => {
+            st.normal = true;
+            st.pending = None;
+            InteractiveKeyAction::RedrawFrame
+        }
+        _ => InteractiveKeyAction::Noop,
+    };
+    Some(action)
+}
+
+/// Route a key through Vim modal editing when enabled. Returns `None` to let
+/// the default composer handling take over (used by insert mode typing).
+fn vim_handle_key(key: KeyEvent, buffer: &mut InteractivePromptBuffer) -> Option<InteractiveKeyAction> {
+    let mut st = vim_state().lock().unwrap();
+    if !st.enabled {
+        return None;
+    }
+    if st.normal {
+        vim_normal_key(&mut st, key, buffer)
+    } else if matches!(key.code, KeyCode::Esc) {
+        st.normal = true;
+        st.pending = None;
+        Some(InteractiveKeyAction::RedrawFrame)
+    } else {
+        None
+    }
 }
 
 impl InteractiveSlashCompletionState {
@@ -526,7 +951,11 @@ impl InteractiveHistoryState {
         if self.index_from_end.is_none() {
             self.draft = Some(buffer.text.clone());
         }
-        let next_index = self.index_from_end.unwrap_or(0).saturating_add(1).min(self.entries.len());
+        let next_index = self
+            .index_from_end
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(self.entries.len());
         self.index_from_end = Some(next_index);
         let entry = self.entries[self.entries.len() - next_index].clone();
         buffer.text = entry;
@@ -698,8 +1127,12 @@ enum Command {
         #[arg(long, value_enum, default_value = "healthy")]
         scenario: Scenario,
     },
-    DecideFile { path: PathBuf },
-    DecideCodexSnapshot { path: PathBuf },
+    DecideFile {
+        path: PathBuf,
+    },
+    DecideCodexSnapshot {
+        path: PathBuf,
+    },
     DecideWorkspace {
         #[arg(long)]
         workspace: PathBuf,
@@ -930,7 +1363,8 @@ fn sample_request(scenario: Scenario) -> ReasoningHarnessRequest {
             rationale: "carry validated state into the next cycle".to_string(),
             cycle_summary: Some(CycleSummary {
                 cycle_id: "cycle-1".to_string(),
-                summary: "validated recent progress and left a safe-point interrupt queued".to_string(),
+                summary: "validated recent progress and left a safe-point interrupt queued"
+                    .to_string(),
                 completed_steps_delta: 1,
                 state_changes: vec![muldex_core::protocol::StateChangeKind::NewConfirmedFinding],
                 checkpoint_created: false,
@@ -1009,7 +1443,8 @@ fn sample_request(scenario: Scenario) -> ReasoningHarnessRequest {
             request.recovery.last_recovery_had_progress = false;
             request.self_correction.active = true;
             request.self_correction.correction_attempt_count = 1;
-            request.self_correction.last_correction_target = Some("retry failed tool step".to_string());
+            request.self_correction.last_correction_target =
+                Some("retry failed tool step".to_string());
             request.pending_approval.active_request = Some(PermissionRequest {
                 request_id: "approval-tool-retry".to_string(),
                 action_kind: PermissionActionKind::ShellExecution,
@@ -1057,18 +1492,27 @@ fn crate_media_asset(asset_id: &str, path: &str) -> MediaAssetRef {
 }
 
 fn print_decision(decision: &muldex_core::reasoning_harness::ReasoningHarnessDecision) {
-    println!("mode: {}", match decision.mode {
-        ContinueMode::SameTurn => "same_turn",
-        ContinueMode::NextTurn => "next_turn",
-        ContinueMode::QueueOnly => "queue_only",
-        ContinueMode::Handoff => "handoff",
-        ContinueMode::Stop => "stop",
-    });
+    println!(
+        "mode: {}",
+        match decision.mode {
+            ContinueMode::SameTurn => "same_turn",
+            ContinueMode::NextTurn => "next_turn",
+            ContinueMode::QueueOnly => "queue_only",
+            ContinueMode::Handoff => "handoff",
+            ContinueMode::Stop => "stop",
+        }
+    );
     println!("checkpoint: {}", decision.should_checkpoint);
     println!("self_correction: {}", decision.should_enter_self_correction);
     println!("pause_for_approval: {}", decision.pause_for_approval);
-    println!("consume_interrupts_now: {}", decision.consume_interrupts_now);
-    println!("may_continue_other_work: {}", decision.may_continue_other_work);
+    println!(
+        "consume_interrupts_now: {}",
+        decision.consume_interrupts_now
+    );
+    println!(
+        "may_continue_other_work: {}",
+        decision.may_continue_other_work
+    );
     println!("rationale: {}", decision.rationale);
     if !decision.violated_rules.is_empty() {
         println!("violated_rules: {:?}", decision.violated_rules);
@@ -1096,7 +1540,10 @@ fn print_runtime_step_result(result: &RuntimeStepResult) {
 fn print_runtime_drive_result(result: &RuntimeDriveResult) {
     println!("runtime.steps: {}", result.step_results.len());
     println!("runtime.final_phase: {:?}", result.final_state.phase);
-    println!("runtime.final_cycle_index: {}", result.final_state.cycle_index);
+    println!(
+        "runtime.final_cycle_index: {}",
+        result.final_state.cycle_index
+    );
     if let Some(report) = &result.final_state.latest_report {
         println!("runtime.final_outcome: {:?}", report.outcome);
         println!("runtime.final_rationale: {}", report.rationale);
@@ -1209,7 +1656,10 @@ fn apply_runtime_step(request: ReasoningHarnessRequest) -> RuntimeStepResult {
     });
 
     match driver.apply_command(RuntimeCommand::Decision(ContinueDecision {
-        allow_continue: !matches!(harness_decision.mode, ContinueMode::Handoff | ContinueMode::Stop),
+        allow_continue: !matches!(
+            harness_decision.mode,
+            ContinueMode::Handoff | ContinueMode::Stop
+        ),
         mode: harness_decision.mode.clone(),
         rationale: harness_decision.rationale.clone(),
         next_action: None,
@@ -1224,7 +1674,10 @@ fn apply_runtime_step(request: ReasoningHarnessRequest) -> RuntimeStepResult {
         enter_self_correction: harness_decision.should_enter_self_correction,
     })) {
         RuntimeCommandResult::Step(result) => result,
-        other => panic!("unexpected runtime command result for decision: {:?}", other),
+        other => panic!(
+            "unexpected runtime command result for decision: {:?}",
+            other
+        ),
     }
 }
 
@@ -1336,7 +1789,10 @@ fn demo_host_persistence() -> Result<(), Box<dyn std::error::Error>> {
     match result {
         RuntimeCommandResult::Step(step) => {
             println!("demo.restored_phase: {:?}", step.updated_state.phase);
-            println!("demo.restored_cycle_index: {}", step.updated_state.cycle_index);
+            println!(
+                "demo.restored_cycle_index: {}",
+                step.updated_state.cycle_index
+            );
             println!("demo.restored_outcome: {:?}", step.report.outcome);
         }
         other => {
@@ -1381,9 +1837,9 @@ fn import_codex_snapshot(path: PathBuf) -> Result<(), Box<dyn std::error::Error>
             ),
             Err(_) => {
                 let snapshot: CodexBootstrapSnapshot = serde_json::from_str(&raw)?;
-                import_external_snapshot_as_runtime_state(
-                    ExternalRuntimeSnapshot::CodexBootstrap(snapshot),
-                )
+                import_external_snapshot_as_runtime_state(ExternalRuntimeSnapshot::CodexBootstrap(
+                    snapshot,
+                ))
             }
         },
     };
@@ -1401,7 +1857,8 @@ fn export_session_view_command(
     let mode = match mode {
         SessionExportModeArg::Raw => ReportExportMode::Raw,
         SessionExportModeArg::Compressed => {
-            let previous = muldex_runtime::continuity::export_latest_report_raw(&host, &session_id)?;
+            let previous =
+                muldex_runtime::continuity::export_latest_report_raw(&host, &session_id)?;
             let view = export_session_view(
                 &host,
                 &session_id,
@@ -1466,7 +1923,10 @@ fn daemon_serve_loop(path: PathBuf, iterations: usize) -> Result<(), Box<dyn std
 }
 
 fn transport_root_for_snapshot(path: &PathBuf) -> PathBuf {
-    match (path.parent(), path.file_stem().and_then(|stem| stem.to_str())) {
+    match (
+        path.parent(),
+        path.file_stem().and_then(|stem| stem.to_str()),
+    ) {
         (Some(parent), Some(stem)) => parent.join(format!("{stem}.muldex-transport")),
         (Some(parent), None) => parent.join(".muldex-transport"),
         (None, Some(stem)) => PathBuf::from(format!("{stem}.muldex-transport")),
@@ -1563,7 +2023,10 @@ fn daemon_stale_status(path: PathBuf, threshold_ms: u64) -> Result<(), Box<dyn s
     Ok(())
 }
 
-fn daemon_force_takeover(path: PathBuf, threshold_ms: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn daemon_force_takeover(
+    path: PathBuf,
+    threshold_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = RuntimeDaemon::new(&path);
     daemon.force_takeover(threshold_ms)?;
     println!("daemon.force_takeover: ok");
@@ -1667,7 +2130,9 @@ fn client_list_sessions(path: PathBuf) -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[cfg(test)]
-fn load_client_session_list_view(path: PathBuf) -> Result<muldex_runtime::client_views::ClientSessionListView, Box<dyn std::error::Error>> {
+fn load_client_session_list_view(
+    path: PathBuf,
+) -> Result<muldex_runtime::client_views::ClientSessionListView, Box<dyn std::error::Error>> {
     let host = RuntimeHost::load_snapshot_from_path(&path)?;
     Ok(session_list_view(&host))
 }
@@ -1681,7 +2146,8 @@ fn client_inspect_session(
     let mode = match mode {
         SessionExportModeArg::Raw => ReportExportMode::Raw,
         SessionExportModeArg::Compressed => {
-            let previous = muldex_runtime::continuity::export_latest_report_raw(&host, &session_id)?;
+            let previous =
+                muldex_runtime::continuity::export_latest_report_raw(&host, &session_id)?;
             let view = export_session_view(
                 &host,
                 &session_id,
@@ -1758,13 +2224,15 @@ fn parse_interactive_slash_command(command: &str) -> InteractiveSlashCommand {
         Some("/sessions") => InteractiveSlashCommand::Sessions,
         Some("/resume") => InteractiveSlashCommand::Resume(parts.next().map(str::to_string)),
         Some("/new") => InteractiveSlashCommand::New,
-        Some("/config") => {
-            match parts.next() {
-                Some("llm") | None => InteractiveSlashCommand::ConfigLlm(parse_interactive_llm_config_command(parts.collect())),
-                Some(other) => InteractiveSlashCommand::Unknown(format!("/config {other}")),
-            }
+        Some("/config") => match parts.next() {
+            Some("llm") | None => InteractiveSlashCommand::ConfigLlm(
+                parse_interactive_llm_config_command(parts.collect()),
+            ),
+            Some(other) => InteractiveSlashCommand::Unknown(format!("/config {other}")),
+        },
+        Some("/provider") => {
+            InteractiveSlashCommand::Provider(parse_interactive_provider_command(parts.collect()))
         }
-        Some("/provider") => InteractiveSlashCommand::Provider(parse_interactive_provider_command(parts.collect())),
         Some(other) => InteractiveSlashCommand::Unknown(other.to_string()),
         None => InteractiveSlashCommand::Unknown(command.to_string()),
     }
@@ -1810,6 +2278,8 @@ fn interactive_shell_state() -> InteractiveShellState {
         approval_mode: "on-request".to_string(),
         compact_count: 0,
         resume_count: 0,
+        usage: ShellUsage::default(),
+        rate_limit: ShellRateLimit::default(),
     }
 }
 
@@ -1897,26 +2367,7 @@ fn load_muldex_config() -> Result<MuldexConfig, Box<dyn std::error::Error>> {
         });
     }
     let raw = fs::read_to_string(path)?;
-    let mut config: MuldexConfig = serde_json::from_str(&raw)?;
-    if config.default_provider.is_none() {
-        config.default_provider = Some("llm-router".to_string());
-    }
-    if config.providers.is_empty() {
-        if let Some(legacy) = config.llm_router.as_ref() {
-            config.providers.insert(
-                "llm-router".to_string(),
-                ProviderConfig {
-                    kind: "openai-compatible".to_string(),
-                    host: Some(legacy.host.clone()),
-                    port: Some(legacy.port),
-                    base_url: None,
-                    api_key: Some(legacy.api_key.clone()),
-                    api_key_env: None,
-                    default_model: legacy.default_model.clone(),
-                },
-            );
-        }
-    }
+    let config: MuldexConfig = serde_json::from_str(&raw)?;
     Ok(config)
 }
 
@@ -1933,12 +2384,29 @@ fn masked_api_key(api_key: &str) -> String {
     if api_key.is_empty() {
         return "not-set".to_string();
     }
-    let suffix = api_key.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>();
+    let suffix = api_key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
     format!("***{suffix}")
 }
 
-fn llm_router_provider<'a>(config: &'a MuldexConfig) -> Option<&'a ProviderConfig> {
-    config.providers.get("llm-router")
+fn llm_router_provider(config: &MuldexConfig) -> Option<ProviderConfig> {
+    config.providers.get("llm-router").cloned().or_else(|| {
+        config.llm_router.as_ref().map(|legacy| ProviderConfig {
+            kind: "openai-compatible".to_string(),
+            host: Some(legacy.host.clone()),
+            port: Some(legacy.port),
+            base_url: None,
+            api_key: Some(legacy.api_key.clone()),
+            api_key_env: None,
+            default_model: legacy.default_model.clone(),
+        })
+    })
 }
 
 fn llm_router_provider_mut<'a>(config: &'a mut MuldexConfig) -> &'a mut ProviderConfig {
@@ -1957,17 +2425,38 @@ fn llm_router_provider_mut<'a>(config: &'a mut MuldexConfig) -> &'a mut Provider
 }
 
 fn interactive_shell_plain_output_enabled() -> bool {
-    if matches!(std::env::var("MULDEX_FORCE_TTY_RENDER"), Ok(value) if value == "1") {
-        return false;
-    }
     if matches!(std::env::var("MULDEX_FORCE_PLAIN_SHELL"), Ok(value) if value == "1") {
         return true;
     }
-    !io::stdout().is_terminal()
+    !interactive_shell_tty_enabled()
+}
+
+fn interactive_shell_tty_enabled() -> bool {
+    if matches!(std::env::var("MULDEX_FORCE_TTY_RENDER"), Ok(value) if value == "1") {
+        return io::stdout().is_terminal() && io::stdin().is_terminal();
+    }
+    io::stdout().is_terminal() && io::stdin().is_terminal()
 }
 
 fn interactive_shell_line_input_enabled() -> bool {
     interactive_shell_plain_output_enabled() || !io::stdin().is_terminal()
+}
+
+fn interactive_shell_exit_notice_lines(session_id: &str) -> [String; 2] {
+    [
+        "leaving muldex interactive shell".to_string(),
+        format!("To continue this session, run muldex resume {session_id}"),
+    ]
+}
+
+fn emit_interactive_shell_exit_notice(
+    tui_session: &mut Option<interactive_tui::TuiTerminalSession>,
+    session_id: &str,
+) {
+    let _ = tui_session.take();
+    for line in interactive_shell_exit_notice_lines(session_id) {
+        println!("{line}");
+    }
 }
 
 fn interactive_scripted_keys_state() -> Option<InteractiveScriptedKeysState> {
@@ -2002,16 +2491,46 @@ fn interactive_scripted_keys_state() -> Option<InteractiveScriptedKeysState> {
 
 fn interactive_slash_catalog() -> &'static [InteractiveSlashHint] {
     &[
-        InteractiveSlashHint { command: "/help", summary: "show available commands" },
-        InteractiveSlashHint { command: "/status", summary: "show runtime state" },
-        InteractiveSlashHint { command: "/model", summary: "show or set active model" },
-        InteractiveSlashHint { command: "/provider", summary: "show, list, or switch provider" },
-        InteractiveSlashHint { command: "/approval", summary: "show or set approval mode" },
-        InteractiveSlashHint { command: "/compact", summary: "request compaction" },
-        InteractiveSlashHint { command: "/sessions", summary: "list resumable sessions" },
-        InteractiveSlashHint { command: "/resume", summary: "resume active or named session" },
-        InteractiveSlashHint { command: "/new", summary: "create a fresh session" },
-        InteractiveSlashHint { command: "/exit", summary: "leave interactive shell" },
+        InteractiveSlashHint {
+            command: "/help",
+            summary: "show available commands",
+        },
+        InteractiveSlashHint {
+            command: "/status",
+            summary: "show runtime state",
+        },
+        InteractiveSlashHint {
+            command: "/model",
+            summary: "show or set active model",
+        },
+        InteractiveSlashHint {
+            command: "/provider",
+            summary: "show, list, or switch provider",
+        },
+        InteractiveSlashHint {
+            command: "/approval",
+            summary: "show or set approval mode",
+        },
+        InteractiveSlashHint {
+            command: "/compact",
+            summary: "request compaction",
+        },
+        InteractiveSlashHint {
+            command: "/sessions",
+            summary: "list resumable sessions",
+        },
+        InteractiveSlashHint {
+            command: "/resume",
+            summary: "resume active or named session",
+        },
+        InteractiveSlashHint {
+            command: "/new",
+            summary: "create a fresh session",
+        },
+        InteractiveSlashHint {
+            command: "/exit",
+            summary: "leave interactive shell",
+        },
     ]
 }
 
@@ -2027,49 +2546,150 @@ fn filtered_interactive_slash_hints(buffer: &InteractivePromptBuffer) -> Vec<Int
         .collect()
 }
 
-fn render_interactive_slash_hint_lines(
-    buffer: &InteractivePromptBuffer,
-    completion: &InteractiveSlashCompletionState,
-) -> Vec<String> {
-    if !completion.visible {
-        return Vec::new();
+fn active_provider_summary(
+    config: &MuldexConfig,
+    runtime: &RuntimeState,
+    shell: &InteractiveShellState,
+) -> String {
+    match resolve_provider_config(config, None) {
+        Ok(provider) => {
+            let model = provider
+                .default_model
+                .clone()
+                .unwrap_or_else(|| runtime_model_label(runtime, shell));
+            format!("{} / {}", provider.name, model)
+        }
+        Err(_) => String::new(),
     }
-    let hints = filtered_interactive_slash_hints(buffer);
-    if hints.is_empty() {
-        return Vec::new();
+}
+
+fn active_provider_is_configured(config: &MuldexConfig) -> bool {
+    resolve_provider_config(config, None).is_ok()
+}
+
+fn append_system_messages_to_active_session(
+    contents: impl IntoIterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let active_session_id = store.active_session_id.clone();
+    if let Some(snapshot) = store
+        .sessions
+        .iter_mut()
+        .find(|snapshot| snapshot.session_id == active_session_id)
+    {
+        for content in contents {
+            snapshot.messages.push(InteractiveMessage {
+                role: InteractiveMessageRole::System,
+                content,
+            });
+        }
+    }
+    save_interactive_shell_store(&store)?;
+    Ok(())
+}
+
+fn interactive_shell_help_lines() -> Vec<String> {
+    vec![
+        "/help     show available commands".to_string(),
+        "/status   show runtime phase and cycle".to_string(),
+        "/config llm show current llm-router config".to_string(),
+        "/provider show current provider or switch with /provider use <name>".to_string(),
+        "/model    show or set active model".to_string(),
+        "/approval show or set approval mode".to_string(),
+        "/compact  record a compaction request".to_string(),
+        "/sessions list resumable interactive shells".to_string(),
+        "/resume   restore active shell or a named session".to_string(),
+        "/new      create a fresh interactive shell session".to_string(),
+        "/exit     leave interactive shell".to_string(),
+    ]
+}
+
+fn interactive_shell_status_lines(
+    driver: &RuntimeDriver,
+    shell: &InteractiveShellState,
+) -> Vec<String> {
+    let config = load_muldex_config().unwrap_or_default();
+    let mut lines = vec![
+        format!("session.phase: {:?}", driver.state.phase),
+        format!("session.cycle_index: {}", driver.state.cycle_index),
+        format!("session.objective: {}", driver.state.request.objective),
+        format!(
+            "session.model: {}",
+            runtime_model_label(&driver.state, shell)
+        ),
+        format!(
+            "session.approval_mode: {}",
+            approval_policy_label(&driver.state.request.safety.approval_policy)
+        ),
+        format!(
+            "session.requires_explicit_approval_for_next_step: {}",
+            driver
+                .state
+                .request
+                .safety
+                .requires_explicit_approval_for_next_step
+        ),
+        format!("session.compact_count: {}", shell.compact_count),
+        format!("session.resume_count: {}", shell.resume_count),
+        format!(
+            "session.pending_post_compaction: {}",
+            driver.state.request.post_compaction.pending_post_compaction
+        ),
+        format!(
+            "session.first_post_compaction_turn: {}",
+            driver
+                .state
+                .request
+                .post_compaction
+                .first_post_compaction_turn
+        ),
+        format!(
+            "session.compaction_window_id: {:?}",
+            driver.state.request.post_compaction.compaction_window_id
+        ),
+    ];
+
+    match llm_router_provider(&config) {
+        Some(router) => {
+            lines.push(format!("llm_router.host: {:?}", router.host));
+            lines.push(format!("llm_router.port: {:?}", router.port));
+            lines.push(format!(
+                "llm_router.api_key: {}",
+                masked_api_key(router.api_key.as_deref().unwrap_or(""))
+            ));
+            lines.push(format!(
+                "llm_router.default_model: {:?}",
+                router.default_model
+            ));
+        }
+        None => lines.push("llm_router.configured: false".to_string()),
     }
 
-    let mut lines = vec!["slash commands:".to_string()];
-    for hint in hints {
-        let marker = if completion.current_command() == Some(hint.command) {
-            ">"
-        } else {
-            " "
-        };
-        lines.push(format!("{marker} {} - {}", hint.command, hint.summary));
+    lines.push(format!("default_provider: {:?}", config.default_provider));
+    if let Some(active_name) = active_provider_name(&config) {
+        if let Some(provider) = config.providers.get(&active_name) {
+            lines.push(format!("active_provider.kind: {}", provider.kind));
+            lines.push(format!("active_provider.base_url: {:?}", provider.base_url));
+            lines.push(format!("active_provider.host: {:?}", provider.host));
+            lines.push(format!("active_provider.port: {:?}", provider.port));
+            lines.push(format!(
+                "active_provider.default_model: {:?}",
+                provider.default_model
+            ));
+        }
+    }
+    if let Some(report) = driver.state.latest_report.as_ref() {
+        lines.push(format!("session.last_outcome: {:?}", report.outcome));
+        lines.push(format!("session.last_rationale: {}", report.rationale));
     }
     lines
 }
 
-fn render_interactive_history_search_lines(
-    history: &InteractiveHistoryState,
-    search: &InteractiveHistorySearchState,
-) -> Vec<String> {
-    if !search.is_active() {
-        return Vec::new();
+fn interactive_shell_emit_line(line: impl AsRef<str>) {
+    if interactive_shell_plain_output_enabled() {
+        println!("{}", line.as_ref());
     }
-
-    let mut lines = vec![format!("reverse search active: {}", search.query)];
-    lines.push(format!("matches: {}", search.matches.len()));
-    if !search.matches.is_empty() {
-        lines.push(format!("match_index: {}/{}", search.match_index + 1, search.matches.len()));
-    }
-    match search.current_match(history) {
-        Some(entry) => lines.push(format!("match: {}", entry)),
-        None => lines.push("match: none".to_string()),
-    }
-    lines.push("search controls: Ctrl+R next, type to refine, Backspace to widen, Esc to restore draft".to_string());
-    lines
 }
 
 fn apply_interactive_slash_completion(
@@ -2082,13 +2702,20 @@ fn apply_interactive_slash_completion(
     }
 
     if completion.seed == buffer.first_line() && completion.current_command().is_some() {
-        buffer.replace_first_line(completion.current_command().expect("current command present"));
+        buffer.replace_first_line(
+            completion
+                .current_command()
+                .expect("current command present"),
+        );
         return true;
     }
 
     if completion.matches.is_empty() || !completion.seed.starts_with('/') {
         completion.update_from_buffer(buffer);
-    } else if completion.current_command().is_some_and(|command| command == buffer.first_line()) {
+    } else if completion
+        .current_command()
+        .is_some_and(|command| command == buffer.first_line())
+    {
         if completion.matches.len() > 1 {
             completion.select_next();
         }
@@ -2128,43 +2755,27 @@ fn move_interactive_slash_selection(
 }
 
 fn render_interactive_shell_input_frame(
+    tui_session: &mut Option<&mut interactive_tui::TuiTerminalSession>,
     driver: &RuntimeDriver,
     shell: &InteractiveShellState,
+    session_id: &str,
     buffer: &InteractivePromptBuffer,
     completion: &InteractiveSlashCompletionState,
     history: &InteractiveHistoryState,
     search: &InteractiveHistorySearchState,
+    overlay: &interactive_tui::overlay::OverlayState,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    render_interactive_shell_view(driver, shell, buffer, completion, history, search)?;
-    render_interactive_prompt_buffer(buffer)?;
-    Ok(())
-}
-
-fn render_interactive_prompt_buffer(buffer: &InteractivePromptBuffer) -> Result<(), Box<dyn std::error::Error>> {
-    if interactive_shell_plain_output_enabled() {
-        return Ok(());
-    }
-    let lines = buffer.text.split('\n').collect::<Vec<_>>();
-    let cursor_prefix = &buffer.text[..buffer.cursor];
-    let cursor_line = cursor_prefix.chars().filter(|ch| *ch == '\n').count();
-    let cursor_column = cursor_prefix
-        .rsplit('\n')
-        .next()
-        .unwrap_or("")
-        .chars()
-        .count()
-        .saturating_add(3);
-
-    print!("\r\x1b[2K");
-    for (index, line) in lines.iter().enumerate() {
-        if index == 0 {
-            print!("> {line}");
-        } else {
-            print!("\n  {line}");
-        }
-    }
-    print!("\x1b[{}A\r\x1b[{}C", lines.len().saturating_sub(cursor_line + 1), cursor_column);
-    io::stdout().flush()?;
+    render_interactive_shell_view(
+        tui_session.as_deref_mut(),
+        driver,
+        shell,
+        session_id,
+        buffer,
+        completion,
+        history,
+        search,
+        overlay,
+    )?;
     Ok(())
 }
 
@@ -2174,7 +2785,236 @@ fn handle_interactive_key_event(
     completion: &mut InteractiveSlashCompletionState,
     history: &mut InteractiveHistoryState,
     search: &mut InteractiveHistorySearchState,
+    overlay: &mut interactive_tui::overlay::OverlayState,
+    session_id: &str,
 ) -> InteractiveKeyAction {
+    if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return InteractiveKeyAction::Noop;
+    }
+
+    let keymap = init_keymap();
+
+    if overlay.visible {
+        if let Some(action) = keymap.match_pager_action(&key_event) {
+            return match action {
+                "scroll_up" => {
+                    overlay.scroll_up(1);
+                    InteractiveKeyAction::RedrawFrame
+                }
+                "scroll_down" => {
+                    overlay.scroll_down(1);
+                    InteractiveKeyAction::RedrawFrame
+                }
+                "page_up" => {
+                    overlay.page_up(10);
+                    InteractiveKeyAction::RedrawFrame
+                }
+                "page_down" => {
+                    overlay.page_down(10);
+                    InteractiveKeyAction::RedrawFrame
+                }
+                "jump_top" => {
+                    overlay.jump_top();
+                    InteractiveKeyAction::RedrawFrame
+                }
+                "jump_bottom" => {
+                    overlay.jump_bottom();
+                    InteractiveKeyAction::RedrawFrame
+                }
+                "close" => {
+                    overlay.hide();
+                    InteractiveKeyAction::RedrawFrame
+                }
+                _ => InteractiveKeyAction::Noop,
+            };
+        }
+        if let Some(action) = keymap.match_approval_action(&key_event) {
+            match action {
+                "approve" | "approve_session" => {
+                    overlay.hide();
+                    return InteractiveKeyAction::Status;
+                }
+                "deny" | "cancel" => {
+                    overlay.hide();
+                    return InteractiveKeyAction::RedrawFrame;
+                }
+                _ => return InteractiveKeyAction::Noop,
+            }
+        }
+        return InteractiveKeyAction::Noop;
+    }
+
+    if !search.is_active() && !completion.visible {
+        if let Some(action) = vim_handle_key(key_event, buffer) {
+            return action;
+        }
+    }
+
+    if let Some(action) = keymap.match_app_action(&key_event) {
+        match action {
+            "clear_terminal" => return InteractiveKeyAction::ClearScreen,
+            "open_external_editor" => return InteractiveKeyAction::OpenExternalEditor,
+            "copy" => return InteractiveKeyAction::Copy,
+            "open_transcript" => {
+                let lines = transcript_lines_for_pager(session_id);
+                *overlay = interactive_tui::overlay::OverlayState::show_pager(
+                    "Transcript History".to_string(),
+                    lines,
+                );
+                return InteractiveKeyAction::RedrawFrame;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(action) = keymap.match_chat_action(&key_event) {
+        match action {
+            "interrupt_turn" => return InteractiveKeyAction::Exit,
+            _ => {}
+        }
+    }
+
+    if let Some(action) = keymap.match_composer_action(&key_event) {
+        match action {
+            "submit" => {
+                if buffer.first_line().starts_with('/')
+                    && completion.current_command().is_some()
+                    && completion.current_command() != Some(buffer.first_line())
+                {
+                    buffer.replace_first_line(
+                        completion
+                            .current_command()
+                            .expect("current command present"),
+                    );
+                    return InteractiveKeyAction::RedrawFrame;
+                }
+                let input = parse_interactive_shell_input(&buffer.text);
+                completion.reset();
+                search.reset();
+                buffer.clear();
+                history.index_from_end = None;
+                history.draft = None;
+                return InteractiveKeyAction::Submit(input);
+            }
+            "queue" => {
+                if apply_interactive_slash_completion(buffer, completion) {
+                    return InteractiveKeyAction::RedrawFrame;
+                }
+                return InteractiveKeyAction::Noop;
+            }
+            "history_search_previous" => {
+                completion.reset();
+                if search.reverse_search(history, buffer) {
+                    return InteractiveKeyAction::RedrawFrame;
+                }
+                return InteractiveKeyAction::Noop;
+            }
+            "history_search_next" => {
+                return InteractiveKeyAction::RedrawFrame;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(action) = keymap.match_editor_action(&key_event) {
+        return match action {
+            "insert_newline" => {
+                completion.reset();
+                search.reset();
+                buffer.insert_newline();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "move_left" => {
+                completion.reset();
+                search.reset();
+                buffer.move_left();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "move_right" => {
+                completion.reset();
+                search.reset();
+                buffer.move_right();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "move_up" => {
+                if move_interactive_slash_selection(buffer, completion, -1)
+                    || history.previous(buffer)
+                {
+                    if completion.visible {
+                        InteractiveKeyAction::RedrawFrame
+                    } else {
+                        InteractiveKeyAction::RedrawPrompt
+                    }
+                } else {
+                    InteractiveKeyAction::Noop
+                }
+            }
+            "move_down" => {
+                if move_interactive_slash_selection(buffer, completion, 1)
+                    || history.next(buffer)
+                {
+                    if completion.visible {
+                        InteractiveKeyAction::RedrawFrame
+                    } else {
+                        InteractiveKeyAction::RedrawPrompt
+                    }
+                } else {
+                    InteractiveKeyAction::Noop
+                }
+            }
+            "move_word_left" => {
+                completion.reset();
+                search.reset();
+                buffer.move_word_left();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "move_word_right" => {
+                completion.reset();
+                search.reset();
+                buffer.move_word_right();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "move_line_start" => {
+                completion.reset();
+                search.reset();
+                buffer.move_home();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "move_line_end" => {
+                completion.reset();
+                search.reset();
+                buffer.move_end();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "delete_backward" => {
+                if search.backspace_query(history, buffer) {
+                    completion.reset();
+                    return InteractiveKeyAction::RedrawFrame;
+                }
+                completion.reset();
+                search.reset();
+                buffer.backspace();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "delete_backward_word" => {
+                completion.reset();
+                history.index_from_end = None;
+                history.draft = None;
+                search.reset();
+                buffer.delete_word_left();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "kill_line_start" => {
+                completion.reset();
+                search.reset();
+                buffer.clear();
+                InteractiveKeyAction::RedrawPrompt
+            }
+            "yank" => return InteractiveKeyAction::Yank,
+            _ => InteractiveKeyAction::Noop,
+        };
+    }
+
     match key_event {
         KeyEvent {
             code: KeyCode::Char('c' | 'd'),
@@ -2182,23 +3022,8 @@ fn handle_interactive_key_event(
             ..
         } if modifiers.contains(KeyModifiers::CONTROL) => InteractiveKeyAction::Exit,
         KeyEvent {
-            code: KeyCode::Char('l'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => InteractiveKeyAction::Status,
-        KeyEvent {
-            code: KeyCode::Char('r'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            completion.reset();
-            if search.reverse_search(history, buffer) {
-                InteractiveKeyAction::RedrawFrame
-            } else {
-                InteractiveKeyAction::Noop
-            }
-        }
-        KeyEvent { code: KeyCode::Esc, .. } => {
+            code: KeyCode::Esc, ..
+        } => {
             if search.restore_draft(buffer) {
                 completion.reset();
                 return InteractiveKeyAction::RedrawFrame;
@@ -2212,130 +3037,13 @@ fn handle_interactive_key_event(
             }
             InteractiveKeyAction::RedrawFrame
         }
-        KeyEvent { code: KeyCode::Home, .. } => {
-            completion.reset();
-            search.reset();
-            buffer.move_home();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::End, .. } => {
-            completion.reset();
-            search.reset();
-            buffer.move_end();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent {
-            code: KeyCode::Char('j'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            completion.reset();
-            search.reset();
-            buffer.insert_newline();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent {
-            code: KeyCode::Char('u'),
-            modifiers,
-            ..
-        } if modifiers.contains(KeyModifiers::CONTROL) => {
-            completion.reset();
-            search.reset();
-            buffer.clear();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Backspace, .. } => {
-            if search.backspace_query(history, buffer) {
-                completion.reset();
-                return InteractiveKeyAction::RedrawFrame;
-            }
-            completion.reset();
-            search.reset();
-            buffer.backspace();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Left, modifiers, .. } if modifiers.contains(KeyModifiers::ALT) => {
-            completion.reset();
-            search.reset();
-            buffer.move_word_left();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Left, .. } => {
-            completion.reset();
-            search.reset();
-            buffer.move_left();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Up, .. } => {
-            if move_interactive_slash_selection(buffer, completion, -1) || history.previous(buffer) {
-                if completion.visible {
-                    InteractiveKeyAction::RedrawFrame
-                } else {
-                    InteractiveKeyAction::RedrawPrompt
-                }
-            } else {
-                InteractiveKeyAction::Noop
-            }
-        }
-        KeyEvent { code: KeyCode::Right, modifiers, .. } if modifiers.contains(KeyModifiers::ALT) => {
-            completion.reset();
-            search.reset();
-            buffer.move_word_right();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Right, .. } => {
-            completion.reset();
-            search.reset();
-            buffer.move_right();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Down, .. } => {
-            if move_interactive_slash_selection(buffer, completion, 1) || history.next(buffer) {
-                if completion.visible {
-                    InteractiveKeyAction::RedrawFrame
-                } else {
-                    InteractiveKeyAction::RedrawPrompt
-                }
-            } else {
-                InteractiveKeyAction::Noop
-            }
-        }
-        KeyEvent { code: KeyCode::Char('w'), modifiers, .. } if modifiers.contains(KeyModifiers::CONTROL) => {
-            completion.reset();
-            history.index_from_end = None;
-            history.draft = None;
-            search.reset();
-            buffer.delete_word_left();
-            InteractiveKeyAction::RedrawPrompt
-        }
-        KeyEvent { code: KeyCode::Tab, .. } => {
-            if apply_interactive_slash_completion(buffer, completion) {
-                InteractiveKeyAction::RedrawFrame
-            } else {
-                InteractiveKeyAction::Noop
-            }
-        }
-        KeyEvent { code: KeyCode::Enter, .. } => {
-            if buffer.first_line().starts_with('/')
-                && completion.current_command().is_some()
-                && completion.current_command() != Some(buffer.first_line())
-            {
-                buffer.replace_first_line(completion.current_command().expect("current command present"));
-                return InteractiveKeyAction::RedrawFrame;
-            }
-            let input = parse_interactive_shell_input(&buffer.text);
-            completion.reset();
-            search.reset();
-            buffer.clear();
-            history.index_from_end = None;
-            history.draft = None;
-            InteractiveKeyAction::Submit(input)
-        }
         KeyEvent {
             code: KeyCode::Char(ch),
             modifiers,
             ..
-        } if !modifiers.contains(KeyModifiers::CONTROL) => {
+        } if !modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::ALT) =>
+        {
             if search.extend_query(history, buffer, ch) {
                 completion.reset();
                 return InteractiveKeyAction::RedrawFrame;
@@ -2357,75 +3065,235 @@ fn handle_interactive_key_event(
 }
 
 fn read_interactive_shell_input_event(
+    mut tui_session: Option<&mut interactive_tui::TuiTerminalSession>,
     driver: &RuntimeDriver,
     shell: &InteractiveShellState,
+    session_id: &str,
     buffer: &mut InteractivePromptBuffer,
     completion: &mut InteractiveSlashCompletionState,
     history: &mut InteractiveHistoryState,
     search: &mut InteractiveHistorySearchState,
+    overlay: &mut interactive_tui::overlay::OverlayState,
 ) -> Result<Option<InteractiveShellInput>, Box<dyn std::error::Error>> {
-    if !event::poll(Duration::from_millis(250))? {
+    if !interactive_tui::win32_input::poll_console_input()? {
         return Ok(None);
     }
     loop {
-        match event::read()? {
-            Event::Key(key_event) => match handle_interactive_key_event(key_event, buffer, completion, history, search) {
-                InteractiveKeyAction::Noop => {}
-                InteractiveKeyAction::RedrawPrompt => {
-                    render_interactive_prompt_buffer(buffer)?;
+        match interactive_tui::win32_input::read_console_input()? {
+            interactive_tui::win32_input::ConsoleInput::Key(key_event) => {
+                match handle_interactive_key_event(
+                    key_event,
+                    buffer,
+                    completion,
+                    history,
+                    search,
+                    overlay,
+                    session_id,
+                ) {
+                    InteractiveKeyAction::Noop => {}
+InteractiveKeyAction::RedrawPrompt => {
+                        render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                            shell,
+                            session_id,
+                            buffer,
+                            completion,
+                            history,
+                            search,
+                            overlay,
+                        )?;
+                    }
+InteractiveKeyAction::RedrawFrame => {
+                        render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                            shell,
+                            session_id,
+                            buffer,
+                            completion,
+                            history,
+                            search,
+                            overlay,
+                        )?;
+                    }
+InteractiveKeyAction::ClearScreen => {
+                        if let Some(session) = tui_session.as_deref_mut() {
+                            session.clear_scrollback()?;
+                        }
+                        render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                            shell,
+                            session_id,
+                            buffer,
+                            completion,
+                            history,
+                            search,
+                            overlay,
+                        )?;
+                    }
+InteractiveKeyAction::OpenExternalEditor => {
+                        if let Some(session) = tui_session.as_deref_mut() {
+                            session.suspend()?;
+                        }
+                        if let Some(edited) = open_external_editor(&buffer.text) {
+                            buffer.text = edited;
+                        }
+                        if let Some(session) = tui_session.as_deref_mut() {
+                            session.resume()?;
+                        }
+                        render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                            shell,
+                            session_id,
+                            buffer,
+                            completion,
+                            history,
+                            search,
+                            overlay,
+                        )?;
+                    }
+InteractiveKeyAction::Copy => {
+                        let _ = copy_to_clipboard(&buffer.text);
+                        interactive_tui::notifications::notify(
+                            "copied to clipboard",
+                            Duration::from_secs(2),
+                        );
+                        render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                            shell,
+                            session_id,
+                            buffer,
+                            completion,
+                            history,
+                            search,
+                            overlay,
+                        )?;
+                    }
+                    InteractiveKeyAction::Yank => {
+                        let _ = copy_to_clipboard(&buffer.text);
+                        interactive_tui::notifications::notify(
+                            "yanked to clipboard",
+                            Duration::from_secs(2),
+                        );
+                        render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                            shell,
+                            session_id,
+                            buffer,
+                            completion,
+                            history,
+                            search,
+                            overlay,
+                        )?;
+                    }
+                    InteractiveKeyAction::Exit => {
+                        return Ok(Some(InteractiveShellInput::Exit));
+                    }
+                    InteractiveKeyAction::Status => {
+                        return Ok(Some(InteractiveShellInput::Status));
+                    }
+                    InteractiveKeyAction::Submit(input) => {
+                        return Ok(Some(input));
+                    }
                 }
-                InteractiveKeyAction::RedrawFrame => {
-                    render_interactive_shell_input_frame(driver, shell, buffer, completion, history, search)?;
-                }
-                InteractiveKeyAction::Exit => {
-                    println!();
-                    return Ok(Some(InteractiveShellInput::Exit));
-                }
-                InteractiveKeyAction::Status => {
-                    print!("\x1b[2J\x1b[H");
-                    io::stdout().flush()?;
-                    return Ok(Some(InteractiveShellInput::Status));
-                }
-                InteractiveKeyAction::Submit(input) => {
-                    println!();
-                    return Ok(Some(input));
-                }
-            },
-            _ => {}
+            }
+            interactive_tui::win32_input::ConsoleInput::Resize => {
+                render_interactive_shell_input_frame(
+                    &mut tui_session,
+                    driver,
+                    shell,
+                    session_id,
+                    buffer,
+                    completion,
+                    history,
+                    search,
+                    overlay,
+                )?;
+            }
+            interactive_tui::win32_input::ConsoleInput::None => {}
         }
     }
 }
 
 fn read_interactive_shell_scripted_event(
+    mut tui_session: Option<&mut interactive_tui::TuiTerminalSession>,
     driver: &RuntimeDriver,
     shell: &InteractiveShellState,
+    session_id: &str,
     buffer: &mut InteractivePromptBuffer,
     completion: &mut InteractiveSlashCompletionState,
     history: &mut InteractiveHistoryState,
     search: &mut InteractiveHistorySearchState,
+    overlay: &mut interactive_tui::overlay::OverlayState,
     scripted: &mut InteractiveScriptedKeysState,
 ) -> Result<Option<InteractiveShellInput>, Box<dyn std::error::Error>> {
     let Some(key_event) = scripted.events.pop_front() else {
         return Ok(Some(InteractiveShellInput::Exit));
     };
 
-    match handle_interactive_key_event(key_event, buffer, completion, history, search) {
+    match handle_interactive_key_event(key_event, buffer, completion, history, search, overlay, session_id) {
         InteractiveKeyAction::Noop => Ok(None),
         InteractiveKeyAction::RedrawPrompt => {
-            render_interactive_prompt_buffer(buffer)?;
+            render_interactive_shell_input_frame(
+                &mut tui_session,
+                driver,
+                shell,
+                session_id,
+                buffer,
+                completion,
+                history,
+                search,
+                overlay,
+            )?;
             Ok(None)
         }
         InteractiveKeyAction::RedrawFrame => {
-            render_interactive_shell_input_frame(driver, shell, buffer, completion, history, search)?;
+            render_interactive_shell_input_frame(
+                &mut tui_session,
+                driver,
+                shell,
+                session_id,
+                buffer,
+                completion,
+                history,
+                search,
+                overlay,
+            )?;
+            Ok(None)
+        }
+        InteractiveKeyAction::ClearScreen => {
+            if let Some(session) = tui_session.as_deref_mut() {
+                session.clear_scrollback()?;
+            }
+render_interactive_shell_input_frame(
+                            &mut tui_session,
+                            driver,
+                shell,
+                session_id,
+                buffer,
+                completion,
+                history,
+                search,
+                overlay,
+            )?;
             Ok(None)
         }
         InteractiveKeyAction::Exit => Ok(Some(InteractiveShellInput::Exit)),
         InteractiveKeyAction::Status => Ok(Some(InteractiveShellInput::Status)),
+        InteractiveKeyAction::OpenExternalEditor => Ok(None),
+        InteractiveKeyAction::Copy => Ok(None),
+        InteractiveKeyAction::Yank => Ok(None),
         InteractiveKeyAction::Submit(input) => Ok(Some(input)),
     }
 }
 
-fn load_interactive_shell_store() -> Result<Option<InteractiveShellStore>, Box<dyn std::error::Error>> {
+fn load_interactive_shell_store()
+-> Result<Option<InteractiveShellStore>, Box<dyn std::error::Error>> {
     let path = interactive_shell_snapshot_path();
     if !path.exists() {
         return Ok(None);
@@ -2472,7 +3340,13 @@ fn active_interactive_shell_snapshot(
         .iter()
         .find(|snapshot| snapshot.session_id == store.active_session_id)
         .cloned()
-        .ok_or_else(|| format!("interactive shell active session not found: {}", store.active_session_id).into())
+        .ok_or_else(|| {
+            format!(
+                "interactive shell active session not found: {}",
+                store.active_session_id
+            )
+            .into()
+        })
 }
 
 fn save_active_interactive_shell_snapshot(
@@ -2489,6 +3363,24 @@ fn save_active_interactive_shell_snapshot(
     {
         snapshot.shell = shell.clone();
         snapshot.runtime = runtime.clone();
+    }
+    save_interactive_shell_store(&store)?;
+    Ok(())
+}
+
+fn remove_last_system_messages(count: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let active_session_id = store.active_session_id.clone();
+    if let Some(snapshot) = store
+        .sessions
+        .iter_mut()
+        .find(|snapshot| snapshot.session_id == active_session_id)
+    {
+        let removed: Vec<_> = snapshot.messages.drain(
+            snapshot.messages.len().saturating_sub(count)..
+        ).collect();
+        drop(removed);
     }
     save_interactive_shell_store(&store)?;
     Ok(())
@@ -2512,7 +3404,42 @@ fn append_message_to_active_session(
     Ok(())
 }
 
-fn append_prompt_history_to_active_session(entry: String) -> Result<(), Box<dyn std::error::Error>> {
+/// Replace the trailing assistant message with `content`, or append a new
+/// assistant message when the last message is not an assistant. Used to stream
+/// the in-progress reply into a single transcript cell (markdown-rendered live)
+/// instead of appending a fresh system message per delta.
+fn replace_last_assistant_message(
+    content: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let active_session_id = store.active_session_id.clone();
+    if let Some(snapshot) = store
+        .sessions
+        .iter_mut()
+        .find(|snapshot| snapshot.session_id == active_session_id)
+    {
+        if let Some(last) = snapshot.messages.last_mut() {
+            if matches!(last.role, InteractiveMessageRole::Assistant) {
+                last.content = content.to_string();
+                save_interactive_shell_store(&store)?;
+                return Ok(());
+            }
+        }
+        snapshot
+            .messages
+            .push(InteractiveMessage {
+                role: InteractiveMessageRole::Assistant,
+                content: content.to_string(),
+            });
+    }
+    save_interactive_shell_store(&store)?;
+    Ok(())
+}
+
+fn append_prompt_history_to_active_session(
+    entry: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut store = load_interactive_shell_store()?
         .unwrap_or_else(interactive_shell_store_with_default_session);
     let active_session_id = store.active_session_id.clone();
@@ -2535,6 +3462,586 @@ fn append_prompt_history_to_active_session(entry: String) -> Result<(), Box<dyn 
     Ok(())
 }
 
+fn interactive_session_messages_as_provider_messages(
+) -> Result<Vec<ProviderTurnMessage>, Box<dyn std::error::Error>> {
+    let store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let snapshot = active_interactive_shell_snapshot(&store)?;
+    Ok(snapshot
+        .messages
+        .iter()
+        .filter_map(|message| match message.role {
+            InteractiveMessageRole::System => Some(ProviderTurnMessage {
+                role: ProviderMessageRole::System,
+                content: Some(message.content.clone()),
+                tool_call_id: None,
+                name: None,
+                tool_calls: Vec::new(),
+            }),
+            InteractiveMessageRole::User => Some(ProviderTurnMessage {
+                role: ProviderMessageRole::User,
+                content: Some(message.content.clone()),
+                tool_call_id: None,
+                name: None,
+                tool_calls: Vec::new(),
+            }),
+            InteractiveMessageRole::Assistant => Some(ProviderTurnMessage {
+                role: ProviderMessageRole::Assistant,
+                content: Some(message.content.clone()),
+                tool_call_id: None,
+                name: None,
+                tool_calls: Vec::new(),
+            }),
+        })
+        .collect())
+}
+
+#[derive(Default, Clone)]
+struct LiveTurnState {
+    content: Arc<Mutex<String>>,
+    busy: Arc<Mutex<bool>>,
+    done: Arc<Mutex<bool>>,
+}
+
+impl LiveTurnState {
+    fn push_delta(&self, delta: &str) {
+        let mut content = self.content.lock().expect("live turn content");
+        content.push_str(delta);
+        *self.busy.lock().expect("live turn busy") = true;
+    }
+
+    fn mark_done(&self) {
+        *self.done.lock().expect("live turn done") = true;
+        *self.busy.lock().expect("live turn busy") = false;
+    }
+}
+
+#[derive(Default)]
+struct ShellTurnEventListener {
+    events: Vec<UiEvent>,
+    live: Option<LiveTurnState>,
+    tx: Option<mpsc::Sender<UiEvent>>,
+}
+
+impl UiEventListener for ShellTurnEventListener {
+    fn on_event(&mut self, event: UiEvent) {
+        if let UiEvent::AssistantDelta { delta } = &event {
+            if let Some(live) = &self.live {
+                live.push_delta(delta);
+            }
+        }
+        if matches!(&event, UiEvent::TurnCompleted | UiEvent::TurnFailed { .. }) {
+            if let Some(live) = &self.live {
+                live.mark_done();
+            }
+        }
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(event.clone());
+        }
+        self.events.push(event);
+    }
+}
+
+struct ShellReadOnlyToolExecutor {
+    driver_state: RuntimeState,
+}
+
+impl ShellReadOnlyToolExecutor {
+    fn from_driver(driver: &RuntimeDriver) -> Self {
+        Self {
+            driver_state: driver.state.clone(),
+        }
+    }
+
+    fn from_driver_state(state: RuntimeState) -> Self {
+        Self { driver_state: state }
+    }
+
+    fn from_driver_ref(state: &RuntimeState) -> Self {
+        Self {
+            driver_state: state.clone(),
+        }
+    }
+
+    fn into_driver_state(self) -> RuntimeState {
+        self.driver_state
+    }
+}
+
+impl InteractiveToolExecutor for ShellReadOnlyToolExecutor {
+    fn tool_specs(&self) -> Vec<muldex_core::provider::ProviderToolSpec> {
+        vec![
+            muldex_core::provider::ProviderToolSpec {
+                name: "session.status".to_string(),
+                description: "Show current session status".to_string(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+            },
+            muldex_core::provider::ProviderToolSpec {
+                name: "session.list".to_string(),
+                description: "List resumable sessions".to_string(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+            },
+            muldex_core::provider::ProviderToolSpec {
+                name: "runtime.inspect".to_string(),
+                description: "Inspect runtime objective and phase".to_string(),
+                input_schema: serde_json::json!({"type":"object","properties":{}}),
+            },
+        ]
+    }
+
+    fn execute(
+        &mut self,
+        call: &muldex_core::provider::ProviderToolCall,
+    ) -> Result<String, InteractiveToolError> {
+        match call.name.as_str() {
+            "session.status" => Ok(serde_json::json!({
+                "phase": format!("{:?}", self.driver_state.phase),
+                "cycle_index": self.driver_state.cycle_index,
+                "objective": self.driver_state.request.objective,
+            })
+            .to_string()),
+            "session.list" => {
+                let store = load_interactive_shell_store()
+                    .map_err(|error| InteractiveToolError::Failed(error.to_string()))?
+                    .unwrap_or_else(interactive_shell_store_with_default_session);
+                Ok(serde_json::json!({
+                    "active_session_id": store.active_session_id,
+                    "sessions": store
+                        .sessions
+                        .into_iter()
+                        .map(|snapshot| serde_json::json!({
+                            "session_id": snapshot.session_id,
+                            "phase": format!("{:?}", snapshot.runtime.phase),
+                            "cycle_index": snapshot.runtime.cycle_index,
+                        }))
+                        .collect::<Vec<_>>()
+                })
+                .to_string())
+            }
+            "runtime.inspect" => Ok(serde_json::json!({
+                "thread_id": self.driver_state.request.thread_id,
+                "turn_id": self.driver_state.request.turn_id,
+                "phase": format!("{:?}", self.driver_state.phase),
+                "objective": self.driver_state.request.objective,
+            })
+            .to_string()),
+            other => Err(InteractiveToolError::Unsupported(other.to_string())),
+        }
+    }
+}
+
+struct ShellInteractiveToolExecutor {
+    driver_state: RuntimeState,
+    pending_approval: Option<PendingApproval>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingApproval {
+    tool_name: String,
+    call_id: String,
+    input: serde_json::Value,
+    summary: String,
+    approved: bool,
+}
+
+impl ShellInteractiveToolExecutor {
+    fn from_driver(driver: &RuntimeDriver) -> Self {
+        Self {
+            driver_state: driver.state.clone(),
+            pending_approval: None,
+        }
+    }
+
+    fn from_driver_state(state: RuntimeState) -> Self {
+        Self {
+            driver_state: state,
+            pending_approval: None,
+        }
+    }
+
+    fn into_driver_state(self) -> RuntimeState {
+        self.driver_state
+    }
+}
+
+impl InteractiveToolExecutor for ShellInteractiveToolExecutor {
+    fn tool_specs(&self) -> Vec<muldex_core::provider::ProviderToolSpec> {
+        let mut specs = ShellReadOnlyToolExecutor::from_driver_ref(&self.driver_state).tool_specs();
+        specs.extend(vec![
+            muldex_core::provider::ProviderToolSpec {
+                name: "file.write".to_string(),
+                description: "Write content to a file (requires approval)".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to write"},
+                        "content": {"type": "string", "description": "Content to write"}
+                    },
+                    "required": ["path", "content"]
+                }),
+            },
+            muldex_core::provider::ProviderToolSpec {
+                name: "shell.exec".to_string(),
+                description: "Execute a shell command (requires approval)".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Command to execute"},
+                        "args": {"type": "array", "items": {"type": "string"}, "description": "Arguments"}
+                    },
+                    "required": ["command"]
+                }),
+            },
+        ]);
+        specs
+    }
+
+    fn execute(
+        &mut self,
+        call: &muldex_core::provider::ProviderToolCall,
+    ) -> Result<String, InteractiveToolError> {
+        if let Some(ref approval) = self.pending_approval {
+            if call.name != "approval.respond" {
+                return Err(InteractiveToolError::Failed(
+                    "Must respond to pending approval first".to_string(),
+                ));
+            }
+        }
+
+        match call.name.as_str() {
+            "session.status" => Ok(serde_json::json!({
+                "phase": format!("{:?}", self.driver_state.phase),
+                "cycle_index": self.driver_state.cycle_index,
+                "objective": self.driver_state.request.objective,
+            })
+            .to_string()),
+            "session.list" => {
+                let store = load_interactive_shell_store()
+                    .map_err(|error| InteractiveToolError::Failed(error.to_string()))?
+                    .unwrap_or_else(interactive_shell_store_with_default_session);
+                Ok(serde_json::json!({
+                    "active_session_id": store.active_session_id,
+                    "sessions": store
+                        .sessions
+                        .into_iter()
+                        .map(|snapshot| serde_json::json!({
+                            "session_id": snapshot.session_id,
+                            "phase": format!("{:?}", snapshot.runtime.phase),
+                            "cycle_index": snapshot.runtime.cycle_index,
+                        }))
+                        .collect::<Vec<_>>()
+                })
+                .to_string())
+            }
+            "runtime.inspect" => Ok(serde_json::json!({
+                "thread_id": self.driver_state.request.thread_id,
+                "turn_id": self.driver_state.request.turn_id,
+                "phase": format!("{:?}", self.driver_state.phase),
+                "objective": self.driver_state.request.objective,
+            })
+            .to_string()),
+            "file.write" => {
+                let args: serde_json::Value = serde_json::from_str(&call.arguments_json).unwrap_or(serde_json::json!({}));
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    return Err(InteractiveToolError::Failed("path is required".to_string()));
+                }
+                if self.pending_approval.is_none() {
+                    self.pending_approval = Some(PendingApproval {
+                        tool_name: "file.write".to_string(),
+                        call_id: call.id.clone(),
+                        input: args.clone(),
+                        summary: format!("Write {} bytes to {}", content.len(), path),
+                        approved: false,
+                    });
+                    return Err(InteractiveToolError::ApprovalRequired(format!(
+                        "Write {} bytes to {}",
+                        content.len(),
+                        path
+                    )));
+                } else if self.pending_approval.as_ref().unwrap().approved {
+                    std::fs::write(path, content)
+                        .map_err(|e| InteractiveToolError::Failed(e.to_string()))?;
+                    self.pending_approval = None;
+                    Ok(serde_json::json!({"success": true, "path": path}).to_string())
+                } else {
+                    self.pending_approval = None;
+                    Err(InteractiveToolError::Failed("User denied file write".to_string()))
+                }
+            }
+            "shell.exec" => {
+                let args: serde_json::Value = serde_json::from_str(&call.arguments_json).unwrap_or(serde_json::json!({}));
+                let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let args_arr = args.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                if command.is_empty() {
+                    return Err(InteractiveToolError::Failed("command is required".to_string()));
+                }
+                let args_str: Vec<String> = args_arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                let summary = if args_str.is_empty() {
+                    command.to_string()
+                } else {
+                    format!("{} {}", command, args_str.join(" "))
+                };
+                if self.pending_approval.is_none() {
+                    self.pending_approval = Some(PendingApproval {
+                        tool_name: "shell.exec".to_string(),
+                        call_id: call.id.clone(),
+                        input: args.clone(),
+                        summary: summary.clone(),
+                        approved: false,
+                    });
+                    return Err(InteractiveToolError::ApprovalRequired(format!(
+                        "Execute: {}",
+                        summary
+                    )));
+                } else if self.pending_approval.as_ref().unwrap().approved {
+                    let output = std::process::Command::new(command)
+                        .args(&args_str)
+                        .output()
+                        .map_err(|e| InteractiveToolError::Failed(e.to_string()))?;
+                    self.pending_approval = None;
+                    Ok(serde_json::json!({
+                        "stdout": String::from_utf8_lossy(&output.stdout),
+                        "stderr": String::from_utf8_lossy(&output.stderr),
+                        "status": output.status.code()
+                    })
+                    .to_string())
+                } else {
+                    self.pending_approval = None;
+                    Err(InteractiveToolError::Failed("User denied shell exec".to_string()))
+                }
+            }
+            other => Err(InteractiveToolError::Unsupported(other.to_string())),
+        }
+    }
+}
+
+impl ShellInteractiveToolExecutor {
+    fn exec_file_write(&mut self) -> Result<String, InteractiveToolError> {
+        let input = self
+            .pending_approval
+            .as_ref()
+            .map(|a| a.input.clone())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let content = input.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if path.is_empty() {
+            return Err(InteractiveToolError::Failed("path is required".to_string()));
+        }
+        std::fs::write(path, content).map_err(|e| InteractiveToolError::Failed(e.to_string()))?;
+        self.pending_approval = None;
+        Ok(serde_json::json!({ "success": true, "path": path }).to_string())
+    }
+
+    fn exec_shell_exec(&mut self) -> Result<String, InteractiveToolError> {
+        let input = self
+            .pending_approval
+            .as_ref()
+            .map(|a| a.input.clone())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let args_arr = input
+            .get("args")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let args_str: Vec<String> = args_arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        if command.is_empty() {
+            return Err(InteractiveToolError::Failed("command is required".to_string()));
+        }
+        let output = std::process::Command::new(command)
+            .args(&args_str)
+            .output()
+            .map_err(|e| InteractiveToolError::Failed(e.to_string()))?;
+        self.pending_approval = None;
+        Ok(serde_json::json!({
+            "stdout": String::from_utf8_lossy(&output.stdout),
+            "stderr": String::from_utf8_lossy(&output.stderr),
+            "status": output.status.code(),
+        })
+        .to_string())
+    }
+
+    /// Execute an already-vetted tool call on behalf of the user after the
+    /// approval modal resolves. `approve` reflects the user's decision.
+    pub fn run_captured(
+        &mut self,
+        call: &muldex_core::provider::ProviderToolCall,
+        approve: bool,
+    ) -> Result<String, InteractiveToolError> {
+        let input: serde_json::Value =
+            serde_json::from_str(&call.arguments_json).unwrap_or(serde_json::json!({}));
+        let summary = match call.name.as_str() {
+            "file.write" => {
+                let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let len = input
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.len())
+                    .unwrap_or(0);
+                format!("Write {len} bytes to {path}")
+            }
+            "shell.exec" => {
+                let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let args_arr = input
+                    .get("args")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let args_str: Vec<String> = args_arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+                if args_str.is_empty() {
+                    command.to_string()
+                } else {
+                    format!("{command} {}", args_str.join(" "))
+                }
+            }
+            _ => return Err(InteractiveToolError::Unsupported(call.name.clone())),
+        };
+        if !approve {
+            return Err(InteractiveToolError::Failed("User denied approval".to_string()));
+        }
+        self.pending_approval = Some(PendingApproval {
+            tool_name: call.name.clone(),
+            call_id: call.id.clone(),
+            input,
+            summary,
+            approved: true,
+        });
+        match call.name.as_str() {
+            "file.write" => self.exec_file_write(),
+            "shell.exec" => self.exec_shell_exec(),
+            _ => Err(InteractiveToolError::Unsupported(call.name.clone())),
+        }
+    }
+}
+
+fn emit_interactive_ui_event(event: &UiEvent) {
+    match event {
+        UiEvent::TurnStarted { model, .. } => {
+            interactive_shell_emit_line(format!("assistant.model: {model}"));
+            interactive_shell_emit_line("assistant.turn_started: true");
+        }
+        UiEvent::AssistantDelta { delta } => {
+            interactive_shell_emit_line(format!("assistant.delta: {delta}"));
+        }
+        UiEvent::AssistantMessageFinalized { content } => {
+            interactive_shell_emit_line(format!("assistant.final: {content}"));
+        }
+        UiEvent::ToolCallProposed { call } => {
+            interactive_shell_emit_line(format!("tool.proposed: {} {}", call.name, call.arguments_json));
+        }
+        UiEvent::ApprovalRequested { summary } => {
+            interactive_shell_emit_line(format!("approval.requested: {summary}"));
+        }
+        UiEvent::ToolExecutionStarted { tool_name } => {
+            interactive_shell_emit_line(format!("tool.started: {tool_name}"));
+        }
+        UiEvent::ToolExecutionFinished { tool_name, result } => {
+            interactive_shell_emit_line(format!("tool.finished: {tool_name} {result}"));
+        }
+        UiEvent::TurnFailed { error } => {
+            interactive_shell_emit_line(format!("assistant.error: {error}"));
+        }
+        UiEvent::TurnCompleted => {
+            interactive_shell_emit_line("assistant.turn_completed: true");
+        }
+        UiEvent::Usage {
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            total_tokens,
+        } => {
+            interactive_shell_emit_line(format!(
+                "assistant.usage: in={input_tokens} cached={cached_input_tokens} out={output_tokens} total={total_tokens}"
+            ));
+        }
+        UiEvent::RateLimit {
+            remaining_requests,
+            remaining_tokens,
+            ..
+        } => {
+            interactive_shell_emit_line(format!(
+                "assistant.rate_limit: remaining_requests={remaining_requests:?} remaining_tokens={remaining_tokens:?}"
+            ));
+        }
+    }
+}
+
+fn persist_interactive_ui_events(events: &[UiEvent]) -> Result<(), Box<dyn std::error::Error>> {
+    for event in events {
+        match event {
+            UiEvent::TurnStarted { .. } | UiEvent::TurnCompleted => {}
+            UiEvent::AssistantDelta { .. } => {}
+            UiEvent::AssistantMessageFinalized { content } => {
+                replace_last_assistant_message(content)?;
+            }
+            UiEvent::ToolCallProposed { call } => {
+                append_message_to_active_session(
+                    InteractiveMessageRole::System,
+                    format!("tool proposed: {} {}", call.name, call.arguments_json),
+                )?;
+            }
+            UiEvent::ApprovalRequested { summary } => {
+                append_message_to_active_session(
+                    InteractiveMessageRole::System,
+                    format!("approval requested: {summary}"),
+                )?;
+            }
+            UiEvent::ToolExecutionStarted { tool_name } => {
+                append_message_to_active_session(
+                    InteractiveMessageRole::System,
+                    format!("tool started: {tool_name}"),
+                )?;
+            }
+            UiEvent::ToolExecutionFinished { tool_name, result } => {
+                append_message_to_active_session(
+                    InteractiveMessageRole::System,
+                    format!("tool finished: {tool_name} {result}"),
+                )?;
+            }
+            UiEvent::TurnFailed { error } => {
+                append_message_to_active_session(
+                    InteractiveMessageRole::System,
+                    format!("assistant error: {error}"),
+                )?;
+            }
+            UiEvent::Usage { .. } | UiEvent::RateLimit { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn refresh_interactive_shell_session_locals(
+    session_id: &mut String,
+    shell: &mut InteractiveShellState,
+    prompt_buffer: &mut InteractivePromptBuffer,
+    completion_state: &mut InteractiveSlashCompletionState,
+    history_state: &mut InteractiveHistoryState,
+    history_search_state: &mut InteractiveHistorySearchState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let snapshot = active_interactive_shell_snapshot(&store)?;
+
+    if snapshot.session_id != *session_id {
+        *session_id = snapshot.session_id;
+        *shell = snapshot.shell.clone();
+        *history_state = InteractiveHistoryState::from_entries(snapshot.prompt_history.clone());
+        *history_search_state = InteractiveHistorySearchState::default();
+        *completion_state = InteractiveSlashCompletionState::default();
+        prompt_buffer.clear();
+    }
+
+    Ok(())
+}
+
 fn print_interactive_shell_sessions() -> Result<(), Box<dyn std::error::Error>> {
     match load_interactive_shell_store()? {
         Some(store) => {
@@ -2547,7 +4054,10 @@ fn print_interactive_shell_sessions() -> Result<(), Box<dyn std::error::Error>> 
                         "session.model: {}",
                         runtime_model_label(&snapshot.runtime, &snapshot.shell)
                     );
-                    println!("session.active: {}", snapshot.session_id == store.active_session_id);
+                    println!(
+                        "session.active: {}",
+                        snapshot.session_id == store.active_session_id
+                    );
                     println!("session.message_count: {}", snapshot.messages.len());
                 }
             }
@@ -2568,11 +4078,18 @@ fn print_interactive_shell_banner() {
     }
 }
 
-fn print_interactive_shell_header(driver: &RuntimeDriver, shell: &InteractiveShellState, session_id: &str) {
+fn print_interactive_shell_header(
+    driver: &RuntimeDriver,
+    shell: &InteractiveShellState,
+    session_id: &str,
+) {
     println!("== muldex session ==");
     println!("session.id: {}", session_id);
     println!("session.phase: {:?}", driver.state.phase);
-    println!("session.model: {}", runtime_model_label(&driver.state, shell));
+    println!(
+        "session.model: {}",
+        runtime_model_label(&driver.state, shell)
+    );
     println!(
         "session.approval_mode: {}",
         approval_policy_label(&driver.state.request.safety.approval_policy)
@@ -2592,108 +4109,104 @@ fn print_interactive_message_log(messages: &[InteractiveMessage]) {
     }
 }
 
+fn transcript_lines_for_pager(session_id: &str) -> Vec<String> {
+    let store = match load_interactive_shell_store() {
+        Ok(store) => store,
+        Err(_) => return vec!["(no transcript available)".to_string()],
+    };
+    let store = store.unwrap_or_else(interactive_shell_store_with_default_session);
+    let Ok(snapshot) = active_interactive_shell_snapshot(&store) else {
+        return vec!["(no transcript available)".to_string()];
+    };
+    let mut lines = vec![format!("session: {session_id}"), String::new()];
+    for message in &snapshot.messages {
+        let role = match message.role {
+            InteractiveMessageRole::System => "SYSTEM",
+            InteractiveMessageRole::User => "USER",
+            InteractiveMessageRole::Assistant => "ASSISTANT",
+        };
+        lines.push(format!("[{role}]"));
+        for content_line in message.content.split('\n') {
+            lines.push(content_line.to_string());
+        }
+        lines.push(String::new());
+    }
+    lines
+}
+
 fn render_interactive_shell_view(
+    tui_session: Option<&mut interactive_tui::TuiTerminalSession>,
     driver: &RuntimeDriver,
     shell: &InteractiveShellState,
+    session_id: &str,
     buffer: &InteractivePromptBuffer,
     completion: &InteractiveSlashCompletionState,
     history: &InteractiveHistoryState,
     search: &InteractiveHistorySearchState,
+    overlay: &interactive_tui::overlay::OverlayState,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let snapshot = active_interactive_shell_snapshot(&store)?;
+    let view_model = build_interactive_shell_view_model(
+        driver,
+        shell,
+        session_id,
+        &snapshot.messages,
+        buffer,
+        completion,
+        history,
+        search,
+        overlay,
+    );
+
     if interactive_shell_plain_output_enabled() {
         return Ok(());
     }
 
-    let store = load_interactive_shell_store()?
-        .unwrap_or_else(interactive_shell_store_with_default_session);
-    let snapshot = active_interactive_shell_snapshot(&store)?;
-    print!("\x1b[2J\x1b[H");
-    print_interactive_shell_header(driver, shell, &snapshot.session_id);
-    print_interactive_message_log(&snapshot.messages);
-    println!();
-    println!("commands: /help /status /model /approval /compact /sessions /resume /new /exit");
-    for line in render_interactive_slash_hint_lines(buffer, completion) {
-        println!("{line}");
-    }
-    for line in render_interactive_history_search_lines(history, search) {
-        println!("{line}");
+    if let Some(session) = tui_session {
+        set_interactive_cursor_style(session, overlay.visible);
+        interactive_tui::draw(session, &view_model)?;
+    } else {
+        let mut session = interactive_tui::start_terminal_session(false)?;
+        set_interactive_cursor_style(&mut session, overlay.visible);
+        interactive_tui::draw(&mut session, &view_model)?;
     }
     Ok(())
 }
 
+fn set_interactive_cursor_style(
+    session: &mut interactive_tui::TuiTerminalSession,
+    overlay_visible: bool,
+) {
+    let vim_normal = vim_state()
+        .lock()
+        .map(|state| state.enabled && state.normal)
+        .unwrap_or(false);
+    let result = if overlay_visible {
+        session.set_cursor_hidden()
+    } else if vim_normal {
+        session.set_cursor_style(crossterm::cursor::SetCursorStyle::SteadyBlock)
+    } else {
+        session.set_cursor_bar()
+    };
+    if let Err(error) = result {
+        let _ = error;
+    }
+}
+
 fn print_interactive_shell_help() {
     if interactive_shell_plain_output_enabled() {
-        println!("/help     show available commands");
-        println!("/status   show runtime phase and cycle");
-        println!("/config llm show current llm-router config");
-        println!("/provider show current provider or switch with /provider use <name>");
-        println!("/model    show or set active model");
-        println!("/approval show or set approval mode");
-        println!("/compact  record a compaction request");
-        println!("/sessions list resumable interactive shells");
-        println!("/resume   restore active shell or a named session");
-        println!("/new      create a fresh interactive shell session");
-        println!("/exit     leave interactive shell");
+        for line in interactive_shell_help_lines() {
+            println!("{line}");
+        }
     }
 }
 
 fn print_interactive_shell_status(driver: &RuntimeDriver, shell: &InteractiveShellState) {
-    let config = load_muldex_config().unwrap_or_default();
     if interactive_shell_plain_output_enabled() {
-        println!("session.phase: {:?}", driver.state.phase);
-        println!("session.cycle_index: {}", driver.state.cycle_index);
-        println!("session.objective: {}", driver.state.request.objective);
-        println!("session.model: {}", runtime_model_label(&driver.state, shell));
-        println!(
-            "session.approval_mode: {}",
-            approval_policy_label(&driver.state.request.safety.approval_policy)
-        );
-        println!(
-            "session.requires_explicit_approval_for_next_step: {}",
-            driver
-                .state
-                .request
-                .safety
-                .requires_explicit_approval_for_next_step
-        );
-        println!("session.compact_count: {}", shell.compact_count);
-        println!("session.resume_count: {}", shell.resume_count);
-        println!(
-            "session.pending_post_compaction: {}",
-            driver.state.request.post_compaction.pending_post_compaction
-        );
-        println!(
-            "session.first_post_compaction_turn: {}",
-            driver.state.request.post_compaction.first_post_compaction_turn
-        );
-        println!(
-            "session.compaction_window_id: {:?}",
-            driver.state.request.post_compaction.compaction_window_id
-        );
-        match llm_router_provider(&config) {
-            Some(router) => {
-                println!("llm_router.host: {:?}", router.host);
-                println!("llm_router.port: {:?}", router.port);
-                println!("llm_router.api_key: {}", masked_api_key(router.api_key.as_deref().unwrap_or("")));
-                println!("llm_router.default_model: {:?}", router.default_model);
-            }
-            None => {
-                println!("llm_router.configured: false");
-            }
-        }
-        println!("default_provider: {:?}", config.default_provider);
-        if let Some(active_name) = active_provider_name(&config) {
-            if let Some(provider) = config.providers.get(active_name) {
-                println!("active_provider.kind: {}", provider.kind);
-                println!("active_provider.base_url: {:?}", provider.base_url);
-                println!("active_provider.host: {:?}", provider.host);
-                println!("active_provider.port: {:?}", provider.port);
-                println!("active_provider.default_model: {:?}", provider.default_model);
-            }
-        }
-        if let Some(report) = driver.state.latest_report.as_ref() {
-            println!("session.last_outcome: {:?}", report.outcome);
-            println!("session.last_rationale: {}", report.rationale);
+        for line in interactive_shell_status_lines(driver, shell) {
+            println!("{line}");
         }
     }
 }
@@ -2735,7 +4248,9 @@ fn handle_interactive_llm_config_command(
 
             match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
                 Ok(_) => format!("llm-router test ok: {host}:{port} reachable"),
-                Err(error) => format!("llm-router test failed: {host}:{port} unreachable ({error})"),
+                Err(error) => {
+                    format!("llm-router test failed: {host}:{port} unreachable ({error})")
+                }
             }
         }
         InteractiveLlmConfigCommand::SetHost(host) => {
@@ -2763,16 +4278,20 @@ fn handle_interactive_llm_config_command(
             save_muldex_config(&config)?;
             format!("llm-router default-model set to {model}")
         }
-        InteractiveLlmConfigCommand::Invalid(reason) => format!("llm-router config error: {reason}"),
+        InteractiveLlmConfigCommand::Invalid(reason) => {
+            format!("llm-router config error: {reason}")
+        }
     };
     Ok(message)
 }
 
-fn active_provider_name(config: &MuldexConfig) -> Option<&str> {
-    config.default_provider.as_deref()
+fn active_provider_name(config: &MuldexConfig) -> Option<String> {
+    muldex_core::provider::active_provider_name(config)
 }
 
-fn provider_socket_address(provider: &ProviderConfig) -> Result<String, Box<dyn std::error::Error>> {
+fn provider_socket_address(
+    provider: &ProviderConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
     if let (Some(host), Some(port)) = (provider.host.as_deref(), provider.port) {
         return Ok(format!("{host}:{port}"));
     }
@@ -2810,7 +4329,9 @@ fn test_provider_connectivity(name: &str, provider: &ProviderConfig) -> String {
             };
             match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
                 Ok(_) => format!("provider test ok: {name} reachable at {address}"),
-                Err(error) => format!("provider test failed: {name} unreachable at {address} ({error})"),
+                Err(error) => {
+                    format!("provider test failed: {name} unreachable at {address} ({error})")
+                }
             }
         }
         Err(error) => format!("provider test failed: {name} address resolution failed ({error})"),
@@ -2823,7 +4344,7 @@ fn handle_interactive_provider_command(
     let mut config = load_muldex_config()?;
     let message = match command {
         InteractiveProviderCommand::Show => {
-            let provider_name = active_provider_name(&config).unwrap_or("not-set");
+            let provider_name = active_provider_name(&config).unwrap_or("not-set".to_string());
             format!("default provider: {provider_name}")
         }
         InteractiveProviderCommand::List => {
@@ -2870,8 +4391,14 @@ fn handle_interactive_slash_command(
     let mut system_messages = Vec::<String>::new();
     match command {
         InteractiveSlashCommand::Model(None) => {
-            println!("session.model: {}", runtime_model_label(&driver.state, shell));
-            system_messages.push(format!("/model -> {}", runtime_model_label(&driver.state, shell)));
+            interactive_shell_emit_line(format!(
+                "session.model: {}",
+                runtime_model_label(&driver.state, shell)
+            ));
+            system_messages.push(format!(
+                "/model -> {}",
+                runtime_model_label(&driver.state, shell)
+            ));
         }
         InteractiveSlashCommand::Model(Some(model)) => {
             shell.model = model.clone();
@@ -2879,48 +4406,57 @@ fn handle_interactive_slash_command(
             if let Some(continuation) = driver.state.request.codex_continuation.as_mut() {
                 continuation.source_model = model.clone();
             }
-            println!("session.model_set: {}", model);
+            interactive_shell_emit_line(format!("session.model_set: {}", model));
             system_messages.push(format!("/model set to {model}"));
         }
         InteractiveSlashCommand::Approval(None) => {
-            println!(
+            interactive_shell_emit_line(format!(
                 "session.approval_mode: {}",
                 approval_policy_label(&driver.state.request.safety.approval_policy)
-            );
+            ));
             system_messages.push(format!(
                 "/approval -> {}",
                 approval_policy_label(&driver.state.request.safety.approval_policy)
             ));
         }
-        InteractiveSlashCommand::Approval(Some(mode)) => {
-            match parse_approval_policy(&mode) {
-                Some(policy) => {
-                    shell.approval_mode = approval_policy_label(&policy).to_string();
-                    driver.state.request.safety.approval_policy = policy.clone();
-                    driver.state.request.safety.requires_explicit_approval_for_next_step =
-                        matches!(policy, ApprovalPolicyDescriptor::Ask);
-                    println!("session.approval_mode_set: {}", shell.approval_mode);
-                    system_messages.push(format!("/approval set to {}", shell.approval_mode));
-                }
-                None => {
-                    println!("session.approval_mode_set: invalid");
-                    println!("session.approval_mode_error: unsupported_mode");
-                    system_messages.push(format!("/approval invalid mode: {mode}"));
-                }
+        InteractiveSlashCommand::Approval(Some(mode)) => match parse_approval_policy(&mode) {
+            Some(policy) => {
+                shell.approval_mode = approval_policy_label(&policy).to_string();
+                driver.state.request.safety.approval_policy = policy.clone();
+                driver
+                    .state
+                    .request
+                    .safety
+                    .requires_explicit_approval_for_next_step =
+                    matches!(policy, ApprovalPolicyDescriptor::Ask);
+                interactive_shell_emit_line(format!(
+                    "session.approval_mode_set: {}",
+                    shell.approval_mode
+                ));
+                system_messages.push(format!("/approval set to {}", shell.approval_mode));
             }
-        }
+            None => {
+                interactive_shell_emit_line("session.approval_mode_set: invalid");
+                interactive_shell_emit_line("session.approval_mode_error: unsupported_mode");
+                system_messages.push(format!("/approval invalid mode: {mode}"));
+            }
+        },
         InteractiveSlashCommand::Compact => {
             shell.compact_count = shell.compact_count.saturating_add(1);
             driver.state.request.post_compaction.pending_post_compaction = true;
-            driver.state.request.post_compaction.first_post_compaction_turn = true;
+            driver
+                .state
+                .request
+                .post_compaction
+                .first_post_compaction_turn = true;
             driver.state.request.post_compaction.compaction_window_id =
                 Some(format!("shell-window-{}", shell.compact_count));
-            println!("session.compaction_requested: true");
-            println!("session.compact_count: {}", shell.compact_count);
-            println!(
+            interactive_shell_emit_line("session.compaction_requested: true");
+            interactive_shell_emit_line(format!("session.compact_count: {}", shell.compact_count));
+            interactive_shell_emit_line(format!(
                 "session.compaction_window_id: {:?}",
                 driver.state.request.post_compaction.compaction_window_id
-            );
+            ));
             system_messages.push(format!(
                 "/compact requested {:?}",
                 driver.state.request.post_compaction.compaction_window_id
@@ -2955,16 +4491,19 @@ fn handle_interactive_slash_command(
                     *shell = snapshot.shell;
                     driver.state = snapshot.runtime;
                     shell.resume_count = shell.resume_count.saturating_add(1);
-                    println!("session.resume_requested: true");
-                    println!("session.resumed: true");
-                    println!("session.id: {}", store.active_session_id);
-                    println!("session.resume_count: {}", shell.resume_count);
+                    interactive_shell_emit_line("session.resume_requested: true");
+                    interactive_shell_emit_line("session.resumed: true");
+                    interactive_shell_emit_line(format!("session.id: {}", store.active_session_id));
+                    interactive_shell_emit_line(format!(
+                        "session.resume_count: {}",
+                        shell.resume_count
+                    ));
                     system_messages.push(format!("/resume -> {}", store.active_session_id));
                 }
                 None => {
-                    println!("session.resume_requested: true");
-                    println!("session.resumed: false");
-                    println!("session.resume_reason: session_not_found");
+                    interactive_shell_emit_line("session.resume_requested: true");
+                    interactive_shell_emit_line("session.resumed: false");
+                    interactive_shell_emit_line("session.resume_reason: session_not_found");
                     system_messages.push(format!("/resume failed for {}", target_session_id));
                 }
             }
@@ -2984,22 +4523,22 @@ fn handle_interactive_slash_command(
             store.active_session_id = snapshot.session_id.clone();
             *shell = snapshot.shell.clone();
             driver.state = snapshot.runtime.clone();
-            println!("session.new: true");
-            println!("session.id: {}", snapshot.session_id);
+            interactive_shell_emit_line("session.new: true");
+            interactive_shell_emit_line(format!("session.id: {}", snapshot.session_id));
             store.sessions.push(snapshot);
         }
         InteractiveSlashCommand::ConfigLlm(command) => {
             let message = handle_interactive_llm_config_command(command)?;
-            println!("{message}");
+            interactive_shell_emit_line(&message);
             system_messages.push(message);
         }
         InteractiveSlashCommand::Provider(command) => {
             let message = handle_interactive_provider_command(command)?;
-            println!("{message}");
+            interactive_shell_emit_line(&message);
             system_messages.push(message);
         }
         InteractiveSlashCommand::Unknown(command) => {
-            println!("slash command not implemented yet: {command}");
+            interactive_shell_emit_line(format!("slash command not implemented yet: {command}"));
         }
     }
 
@@ -3023,17 +4562,255 @@ fn handle_interactive_slash_command(
 
 fn handle_interactive_prompt(
     driver: &mut RuntimeDriver,
-    shell: &InteractiveShellState,
+    shell: &mut InteractiveShellState,
     prompt: String,
+    tui_session: &mut Option<interactive_tui::TuiTerminalSession>,
+    session_id: &str,
+    prompt_buffer: &InteractivePromptBuffer,
+    completion_state: &InteractiveSlashCompletionState,
+    history_state: &InteractiveHistoryState,
+    history_search_state: &InteractiveHistorySearchState,
+    overlay: &mut interactive_tui::overlay::OverlayState,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_muldex_config()?;
+    let resolved_provider = resolve_provider_config(&config, None)?;
+    let model = resolved_provider
+        .default_model
+        .clone()
+        .unwrap_or_else(|| runtime_model_label(&driver.state, shell));
+
     driver.state.request.objective = prompt.clone();
     driver.state.request.continue_reason = ContinueReason::ManualUserRequest;
     append_message_to_active_session(InteractiveMessageRole::User, prompt.clone())?;
     append_prompt_history_to_active_session(prompt.clone())?;
-    let result = driver.advance(ContinueDecision {
+
+    let prior_messages = interactive_session_messages_as_provider_messages()?;
+    let use_tui = tui_session.is_some() && !interactive_shell_plain_output_enabled();
+    let approval_mode = std::env::var("MULDEX_APPROVAL_MODE").as_deref() != Ok("off");
+
+    if use_tui {
+        let (tx, rx) = mpsc::channel::<UiEvent>();
+        let driver_state = driver.state.clone();
+        let thread_pc = resolved_provider.clone();
+        let thread_model = model.clone();
+        let thread_prompt = prompt.clone();
+        let thread_messages = prior_messages.clone();
+
+        append_system_messages_to_active_session(["Thinking...".to_string()])?;
+        redraw_tui(tui_session, driver, shell, session_id, prompt_buffer, completion_state, history_state, history_search_state, overlay)?;
+
+        let join = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+            let provider = ResponsesProvider::default();
+            let mut thread_tools: Box<dyn InteractiveToolExecutor> = if approval_mode {
+            Box::new(ShellInteractiveToolExecutor::from_driver_state(driver_state.clone()))
+        } else {
+            Box::new(ShellReadOnlyToolExecutor::from_driver_state(driver_state.clone()))
+        };
+            let mut thread_listener = ShellTurnEventListener {
+                events: Vec::new(),
+                live: None,
+                tx: Some(tx),
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.block_on(execute_interactive_turn(
+                    &provider,
+                    &thread_pc,
+                    TurnExecutionRequest {
+                        prompt: thread_prompt,
+                        model: thread_model,
+                        prior_messages: thread_messages,
+                        enable_tools: true,
+                    },
+                    thread_tools.as_mut(),
+                    &mut thread_listener,
+                ))
+            }));
+            match result {
+                Ok(Ok(execution)) => Ok((execution, thread_listener.events)),
+                Ok(Err(error)) => Err(format!("turn execution failed: {error}")),
+                Err(_) => Err("turn thread panicked; interface preserved".to_string()),
+            }
+        });
+
+        let mut accumulated = String::new();
+        let mut last_anim = std::time::Instant::now();
+        loop {
+            let received_delta = match rx.try_recv() {
+                Ok(UiEvent::AssistantDelta { delta }) => {
+                    accumulated.push_str(&delta);
+                    let _ = replace_last_assistant_message(&accumulated);
+                    true
+                }
+                Ok(UiEvent::Usage {
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                    total_tokens,
+                }) => {
+                    shell.usage = ShellUsage {
+                        input_tokens,
+                        cached_input_tokens,
+                        output_tokens,
+                        total_tokens,
+                    };
+                    true
+                }
+                Ok(UiEvent::RateLimit {
+                    limit_requests,
+                    remaining_requests,
+                    limit_tokens,
+                    remaining_tokens,
+                    reset_after_seconds,
+                }) => {
+                    shell.rate_limit = ShellRateLimit {
+                        limit_requests,
+                        remaining_requests,
+                        limit_tokens,
+                        remaining_tokens,
+                        reset_after_seconds,
+                    };
+                    true
+                }
+                Ok(_) => false,
+                Err(mpsc::TryRecvError::Empty) => false,
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            };
+            // animate the status spinner between deltas
+            if received_delta || last_anim.elapsed() >= Duration::from_millis(150) {
+                let _ = redraw_tui(
+                    tui_session,
+                    driver,
+                    shell,
+                    session_id,
+                    prompt_buffer,
+                    completion_state,
+                    history_state,
+                    history_search_state,
+                    overlay,
+                );
+                last_anim = std::time::Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let turn_result: Result<
+            (
+                muldex_runtime::interactive_turn::TurnExecutionResult,
+                Vec<muldex_runtime::ui_events::UiEvent>,
+            ),
+            String,
+        > = match join.join() {
+            Ok(inner) => inner,
+            Err(_) => Err("turn thread panicked; interface preserved".to_string()),
+        };
+        match turn_result {
+            Ok((execution, events)) => {
+                remove_last_system_messages(1)?;
+                if execution.state.status
+                    == muldex_runtime::interactive_turn::InteractiveTurnStatus::AwaitingApproval
+                    && approval_mode
+                {
+                    handle_awaiting_approval(
+                        driver,
+                        shell,
+                        session_id,
+                        &prompt,
+                        tui_session,
+                        prompt_buffer,
+                        completion_state,
+                        history_state,
+                        history_search_state,
+                        overlay,
+                        execution,
+                        events,
+                        &resolved_provider,
+                        &model,
+                    )?;
+                } else {
+                    finalize_interactive_turn(
+                        driver,
+                        shell,
+                        session_id,
+                        &prompt,
+                        tui_session,
+                        prompt_buffer,
+                        completion_state,
+                        history_state,
+                        history_search_state,
+                        overlay,
+                        &execution,
+                        &events,
+                    )?;
+                }
+            }
+            Err(error) => {
+                let error_msg = format!("assistant error: {error}");
+                interactive_shell_emit_line(&error_msg);
+                append_message_to_active_session(InteractiveMessageRole::System, error_msg)?;
+                save_active_interactive_shell_snapshot(shell, &driver.state)?;
+                interactive_tui::notifications::notify(
+                    format!("✗ {error}"),
+                    Duration::from_secs(6),
+                );
+                let _ = redraw_tui(
+                    tui_session,
+                    driver,
+                    shell,
+                    session_id,
+                    prompt_buffer,
+                    completion_state,
+                    history_state,
+                    history_search_state,
+                    overlay,
+                );
+            }
+        }
+    } else {
+        let mut listener = ShellTurnEventListener { events: Vec::new(), live: None, tx: None };
+        let mut tools = ShellReadOnlyToolExecutor::from_driver(driver);
+
+        let runtime = tokio::runtime::Runtime::new()?;
+        let execution = runtime.block_on(execute_interactive_turn(
+            &ResponsesProvider::default(),
+            &resolved_provider,
+            TurnExecutionRequest {
+                prompt: prompt.clone(),
+                model,
+                prior_messages,
+                enable_tools: true,
+            },
+            &mut tools,
+            &mut listener,
+        ))?;
+
+        for event in &listener.events {
+            emit_interactive_ui_event(event);
+        }
+        persist_interactive_ui_events(&listener.events)?;
+        driver.state = tools.into_driver_state();
+
+        let rationale = if execution.assistant.content.trim().is_empty() {
+            format!("interactive prompt completed: {prompt}")
+        } else {
+            execution.assistant.content.clone()
+        };
+
+        let result = driver.advance(ContinueDecision { allow_continue: true, mode: ContinueMode::NextTurn, rationale: rationale.clone(), next_action: Some("continue interactive session".to_string()), pause_for_approval: false, consume_interrupts_now: false, may_continue_other_work: true, suppress_duplicate_injection: false, downgrade_trigger_turn: false, request_compaction: false, request_handoff_summary: false, request_checkpoint: false, enter_self_correction: false });
+        interactive_shell_emit_line(format!("assistant.phase: {:?}", result.updated_state.phase));
+        interactive_shell_emit_line(format!("assistant.cycle_index: {}", result.updated_state.cycle_index));
+        interactive_shell_emit_line(format!("assistant.outcome: {:?}", result.report.outcome));
+        interactive_shell_emit_line(format!("assistant.summary: {}", result.report.rationale));
+        save_active_interactive_shell_snapshot(shell, &driver.state)?;
+    }
+    Ok(())
+}
+
+fn next_turn_decision(rationale: String) -> ContinueDecision {
+    ContinueDecision {
         allow_continue: true,
         mode: ContinueMode::NextTurn,
-        rationale: format!("interactive prompt: {prompt}"),
+        rationale,
         next_action: Some("continue interactive session".to_string()),
         pause_for_approval: false,
         consume_interrupts_now: false,
@@ -3044,24 +4821,438 @@ fn handle_interactive_prompt(
         request_handoff_summary: false,
         request_checkpoint: false,
         enter_self_correction: false,
-    });
-    println!("assistant.phase: {:?}", result.updated_state.phase);
-    println!("assistant.cycle_index: {}", result.updated_state.cycle_index);
-    println!("assistant.outcome: {:?}", result.report.outcome);
-    println!("assistant.summary: {}", result.report.rationale);
-    append_message_to_active_session(
-        InteractiveMessageRole::Assistant,
-        result.report.rationale.clone(),
-    )?;
+    }
+}
+
+fn finalize_interactive_turn(
+    driver: &mut RuntimeDriver,
+    shell: &mut InteractiveShellState,
+    session_id: &str,
+    prompt: &str,
+    tui_session: &mut Option<interactive_tui::TuiTerminalSession>,
+    prompt_buffer: &InteractivePromptBuffer,
+    completion_state: &InteractiveSlashCompletionState,
+    history_state: &InteractiveHistoryState,
+    history_search_state: &InteractiveHistorySearchState,
+    overlay: &interactive_tui::overlay::OverlayState,
+    execution: &muldex_runtime::interactive_turn::TurnExecutionResult,
+    events: &[muldex_runtime::ui_events::UiEvent],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for event in events {
+        emit_interactive_ui_event(event);
+    }
+    for event in events {
+        match event {
+            UiEvent::Usage {
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                total_tokens,
+            } => {
+                shell.usage = ShellUsage {
+                    input_tokens: *input_tokens,
+                    cached_input_tokens: *cached_input_tokens,
+                    output_tokens: *output_tokens,
+                    total_tokens: *total_tokens,
+                };
+            }
+            UiEvent::RateLimit {
+                limit_requests,
+                remaining_requests,
+                limit_tokens,
+                remaining_tokens,
+                reset_after_seconds,
+            } => {
+                shell.rate_limit = ShellRateLimit {
+                    limit_requests: *limit_requests,
+                    remaining_requests: *remaining_requests,
+                    limit_tokens: *limit_tokens,
+                    remaining_tokens: *remaining_tokens,
+                    reset_after_seconds: *reset_after_seconds,
+                };
+            }
+            _ => {}
+        }
+    }
+    persist_interactive_ui_events(events)?;
+
+    let rationale = if execution.assistant.content.trim().is_empty() {
+        format!("interactive prompt completed: {prompt}")
+    } else {
+        execution.assistant.content.clone()
+    };
+
+    let result = driver.advance(next_turn_decision(rationale.clone()));
+    interactive_shell_emit_line(format!("assistant.phase: {:?}", result.updated_state.phase));
+    interactive_shell_emit_line(format!("assistant.cycle_index: {}", result.updated_state.cycle_index));
+    interactive_shell_emit_line(format!("assistant.outcome: {:?}", result.report.outcome));
+    interactive_shell_emit_line(format!("assistant.summary: {}", result.report.rationale));
     save_active_interactive_shell_snapshot(shell, &driver.state)?;
+    interactive_tui::notifications::notify(
+        "✓ turn complete — press ? for commands",
+        Duration::from_secs(4),
+    );
+    let _ = redraw_tui(
+        tui_session,
+        driver,
+        shell,
+        session_id,
+        prompt_buffer,
+        completion_state,
+        history_state,
+        history_search_state,
+        overlay,
+    );
     Ok(())
+}
+
+/// Block until the user resolves the approval modal, returning `Some(true)` for
+/// approve, `Some(false)` for deny, or `None` for cancel (Ctrl+C). Auto-denies
+/// after a long timeout so headless/automated runs cannot hang forever.
+fn wait_approval_decision() -> Option<bool> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Some(false);
+        }
+        if interactive_tui::win32_input::poll_console_input().unwrap_or(false) {
+            match interactive_tui::win32_input::read_console_input() {
+                Ok(interactive_tui::win32_input::ConsoleInput::Key(k)) => match k.code {
+                    KeyCode::Char('a') | KeyCode::Enter => return Some(true),
+                    KeyCode::Char('d') | KeyCode::Esc => return Some(false),
+                    KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return None
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+fn spawn_interactive_turn(
+    driver_state: RuntimeState,
+    provider_config: muldex_core::provider::ResolvedProviderConfig,
+    model: String,
+    prompt: String,
+    prior_messages: Vec<muldex_core::provider::ProviderTurnMessage>,
+    enable_tools: bool,
+    approval_mode: bool,
+) -> Result<
+    (
+        muldex_runtime::interactive_turn::TurnExecutionResult,
+        Vec<muldex_runtime::ui_events::UiEvent>,
+    ),
+    String,
+> {
+    let (tx, rx) = mpsc::channel::<muldex_runtime::ui_events::UiEvent>();
+    let join = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let provider = ResponsesProvider::default();
+        let mut tools: Box<dyn InteractiveToolExecutor> = if approval_mode {
+            Box::new(ShellInteractiveToolExecutor::from_driver_state(driver_state.clone()))
+        } else {
+            Box::new(ShellReadOnlyToolExecutor::from_driver_state(driver_state.clone()))
+        };
+        let mut listener = ShellTurnEventListener {
+            events: Vec::new(),
+            live: None,
+            tx: Some(tx),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(execute_interactive_turn(
+                &provider,
+                &provider_config,
+                TurnExecutionRequest {
+                    prompt,
+                    model,
+                    prior_messages,
+                    enable_tools,
+                },
+                tools.as_mut(),
+                &mut listener,
+            ))
+        }));
+        match result {
+            Ok(Ok(execution)) => Ok((execution, listener.events)),
+            Ok(Err(error)) => Err(format!("turn execution failed: {error}")),
+            Err(_) => Err("turn thread panicked; interface preserved".to_string()),
+        }
+    });
+    match join.join() {
+        Ok(inner) => inner,
+        Err(_) => Err("turn thread panicked; interface preserved".to_string()),
+    }
+}
+
+fn handle_awaiting_approval(
+    driver: &mut RuntimeDriver,
+    shell: &mut InteractiveShellState,
+    session_id: &str,
+    prompt: &str,
+    tui_session: &mut Option<interactive_tui::TuiTerminalSession>,
+    prompt_buffer: &InteractivePromptBuffer,
+    completion_state: &InteractiveSlashCompletionState,
+    history_state: &InteractiveHistoryState,
+    history_search_state: &InteractiveHistorySearchState,
+    overlay: &mut interactive_tui::overlay::OverlayState,
+    execution: muldex_runtime::interactive_turn::TurnExecutionResult,
+    events: Vec<muldex_runtime::ui_events::UiEvent>,
+    resolved_provider: &muldex_core::provider::ResolvedProviderConfig,
+    model: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let summary = events
+        .iter()
+        .find_map(|e| {
+            if let muldex_runtime::ui_events::UiEvent::ApprovalRequested { summary } = e {
+                Some(summary.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "A tool call requires your approval".to_string());
+
+    *overlay = interactive_tui::overlay::OverlayState::show_approval(
+        "Confirm action".to_string(),
+        summary.clone(),
+    );
+    let _ = redraw_tui(
+        tui_session,
+        driver,
+        shell,
+        session_id,
+        prompt_buffer,
+        completion_state,
+        history_state,
+        history_search_state,
+        &*overlay,
+    );
+
+    let decision = wait_approval_decision();
+
+    *overlay = interactive_tui::overlay::OverlayState::default();
+    let _ = redraw_tui(
+        tui_session,
+        driver,
+        shell,
+        session_id,
+        prompt_buffer,
+        completion_state,
+        history_state,
+        history_search_state,
+        &*overlay,
+    );
+
+    let mut new_messages = execution.final_messages.clone();
+    if let Some(call) = execution
+        .assistant
+        .tool_calls
+        .iter()
+        .find(|c| c.name == "file.write" || c.name == "shell.exec")
+    {
+        let mut exec = ShellInteractiveToolExecutor::from_driver_state(driver.state.clone());
+        let result = match decision {
+            Some(true) => exec.run_captured(call, true),
+            Some(false) => exec.run_captured(call, false),
+            None => Err(InteractiveToolError::Failed("approval cancelled".to_string())),
+        };
+        let message = result.unwrap_or_else(|e| format!("error: {e}"));
+        muldex_runtime::react_loop::append_tool_result_message(
+            &mut new_messages,
+            &call.name,
+            &call.id,
+            message,
+        );
+    }
+
+    let (rerun_execution, rerun_events) = spawn_interactive_turn(
+        driver.state.clone(),
+        resolved_provider.clone(),
+        model.to_string(),
+        String::new(),
+        new_messages,
+        false,
+        false,
+    )
+    .map_err(|e| e)?;
+
+    let combined: Vec<muldex_runtime::ui_events::UiEvent> = events
+        .into_iter()
+        .chain(rerun_events.into_iter())
+        .collect();
+    finalize_interactive_turn(
+        driver,
+        shell,
+        session_id,
+        prompt,
+        tui_session,
+        prompt_buffer,
+        completion_state,
+        history_state,
+        history_search_state,
+        &*overlay,
+        &rerun_execution,
+        &combined,
+    )?;
+    Ok(())
+}
+
+fn copy_to_clipboard(text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "clip"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()?
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // try wl-copy (Wayland), then xclip (X11)
+        for cmd in ["wl-copy", "xclip", "xsel"] {
+            if std::process::Command::new(cmd)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .is_ok()
+            {
+                if let Some(mut stdin) = std::process::Command::new(cmd)
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()?
+                    .stdin
+                    .take()
+                {
+                    stdin.write_all(text.as_bytes())?;
+                    return Ok(());
+                }
+            }
+        }
+        return Err("no clipboard tool found (wl-copy, xclip, or xsel)".into());
+    }
+    Ok(())
+}
+
+fn open_external_editor(initial: &str) -> Option<String> {
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().unwrap_or("vi").to_string();
+    let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+
+    let dir = std::env::temp_dir();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!("muldex-composer-{stamp}.md"));
+    if std::fs::write(&path, initial).is_err() {
+        return None;
+    }
+
+    let mut command = std::process::Command::new(&program);
+    for arg in &args {
+        command.arg(arg);
+    }
+    command.arg(&path);
+    let status = command.status();
+
+    let content = std::fs::read_to_string(&path).ok();
+    let _ = std::fs::remove_file(&path);
+
+    match status {
+        Ok(_) => content,
+        Err(error) => {
+            interactive_shell_emit_line(&format!("editor '{program}' failed to launch: {error}"));
+            None
+        }
+    }
+}
+
+fn redraw_tui(
+    tui_session: &mut Option<interactive_tui::TuiTerminalSession>,
+    driver: &RuntimeDriver,
+    shell: &InteractiveShellState,
+    session_id: &str,
+    prompt_buffer: &InteractivePromptBuffer,
+    completion_state: &InteractiveSlashCompletionState,
+    history_state: &InteractiveHistoryState,
+    history_search_state: &InteractiveHistorySearchState,
+    overlay: &interactive_tui::overlay::OverlayState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_interactive_shell_store()?
+        .unwrap_or_else(interactive_shell_store_with_default_session);
+    let snapshot = active_interactive_shell_snapshot(&store)?;
+    if let Some(session) = tui_session {
+        interactive_tui::draw(session, &build_interactive_shell_view_model(
+            driver, shell, session_id, &snapshot.messages, prompt_buffer, completion_state, history_state, history_search_state, overlay,
+        ))?;
+    }
+    Ok(())
+}
+
+fn build_interactive_shell_view_model(
+    driver: &RuntimeDriver,
+    shell: &InteractiveShellState,
+    session_id: &str,
+    messages: &[InteractiveMessage],
+    buffer: &InteractivePromptBuffer,
+    completion: &InteractiveSlashCompletionState,
+    history: &InteractiveHistoryState,
+    search: &InteractiveHistorySearchState,
+    overlay: &interactive_tui::overlay::OverlayState,
+) -> interactive_tui::ShellViewModel {
+    let config = load_muldex_config().unwrap_or_default();
+    let provider_summary = active_provider_summary(&config, &driver.state, shell);
+    let slash_hints = filtered_interactive_slash_hints(buffer);
+    interactive_tui::view_model::build_shell_view_model(
+        interactive_tui::view_model::ShellViewModelInput {
+            session_id,
+            runtime: &driver.state,
+            shell,
+            messages,
+            provider_summary: &provider_summary,
+            prompt_buffer: buffer,
+            completion,
+            history,
+            search,
+            slash_hints: &slash_hints,
+            overlay,
+        },
+    )
 }
 
 fn run_interactive_shell(initial_prompt: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_interactive_shell_store()?
         .unwrap_or_else(interactive_shell_store_with_default_session);
     let snapshot = active_interactive_shell_snapshot(&store)?;
-    let session_id = snapshot.session_id.clone();
+    let mut session_id = snapshot.session_id.clone();
     let messages = snapshot.messages.clone();
     let prompt_history = snapshot.prompt_history.clone();
     let mut driver = RuntimeDriver::new(snapshot.runtime);
@@ -3070,42 +5261,89 @@ fn run_interactive_shell(initial_prompt: Option<String>) -> Result<(), Box<dyn s
     let mut completion_state = InteractiveSlashCompletionState::default();
     let mut history_state = InteractiveHistoryState::from_entries(prompt_history);
     let mut history_search_state = InteractiveHistorySearchState::default();
+    let mut overlay_state = interactive_tui::overlay::OverlayState::default();
     let mut scripted_keys_state = interactive_scripted_keys_state();
-    print_interactive_shell_banner();
-    print_interactive_shell_header(&driver, &shell, &session_id);
-    print_interactive_message_log(&messages);
-    if llm_router_provider(&load_muldex_config()?).is_none() {
-        println!("llm-router not configured; use /config llm host <ip>, /config llm port <port>, /config llm api-key <key>");
-    }
-    render_interactive_shell_view(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
-    save_active_interactive_shell_snapshot(&shell, &driver.state)?;
-
-    if let Some(prompt) = initial_prompt {
-        handle_interactive_prompt(&mut driver, &shell, prompt)?;
-        render_interactive_shell_view(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
-    }
-
     let stdin = io::stdin();
     let use_line_input = scripted_keys_state.is_none() && interactive_shell_line_input_enabled();
-    let _raw_mode_guard = if scripted_keys_state.is_none() && !use_line_input {
-        let guard = RawModeGuard::activate()?;
-        render_interactive_shell_input_frame(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
-        Some(guard)
+    let mut tui_session = if scripted_keys_state.is_none() && !use_line_input {
+        Some(interactive_tui::start_terminal_session(true)?)
     } else {
         None
     };
+    let _config_watcher = if tui_session.is_some() {
+        Some(start_config_watcher())
+    } else {
+        None
+    };
+    if tui_session.is_some() {
+        let theme_mode = std::env::var("MULDEX_THEME").unwrap_or_else(|_| "auto".to_string());
+        match theme_mode.to_ascii_lowercase().as_str() {
+            "light" => interactive_tui::terminal_palette::set_terminal_bg((245, 245, 245)),
+            "dark" => interactive_tui::terminal_palette::set_terminal_bg((24, 24, 27)),
+            _ => {
+                if std::env::var("MULDEX_PROBE_BG").is_ok() {
+                    if let Some(bg) = interactive_tui::terminal_palette::probe_background_color() {
+                        interactive_tui::terminal_palette::set_terminal_bg(bg);
+                    }
+                }
+            }
+        }
+    }
+    let provider_not_configured = !active_provider_is_configured(&load_muldex_config()?);
+    print_interactive_shell_banner();
+    if interactive_shell_plain_output_enabled() {
+        print_interactive_shell_header(&driver, &shell, &session_id);
+        print_interactive_message_log(&messages);
+        if provider_not_configured {
+            println!(
+                "llm-router not configured; use /config llm host <ip>, /config llm port <port>, /config llm api-key <key>"
+            );
+        }
+    } else if provider_not_configured {
+        append_system_messages_to_active_session(["llm-router not configured; use /config llm host <ip>, /config llm port <port>, /config llm api-key <key>".to_string()])?;
+    }
+    render_interactive_shell_view(
+        tui_session.as_mut(),
+        &driver,
+        &shell,
+        &session_id,
+        &prompt_buffer,
+        &completion_state,
+        &history_state,
+                &history_search_state,
+                &overlay_state,
+            )?;
+    save_active_interactive_shell_snapshot(&shell, &driver.state)?;
+
+    if let Some(prompt) = initial_prompt {
+                handle_interactive_prompt(&mut driver, &mut shell, prompt, &mut tui_session, &session_id, &prompt_buffer, &completion_state, &history_state, &history_search_state, &mut overlay_state)?;
+        render_interactive_shell_view(
+            tui_session.as_mut(),
+            &driver,
+            &shell,
+            &session_id,
+            &prompt_buffer,
+            &completion_state,
+            &history_state,
+            &history_search_state,
+            &overlay_state,
+        )?;
+    }
 
     loop {
         let input = if let Some(scripted) = scripted_keys_state.as_mut() {
-            read_interactive_shell_scripted_event(
-                &driver,
-                &shell,
-                &mut prompt_buffer,
-                &mut completion_state,
-                &mut history_state,
-                &mut history_search_state,
-                scripted,
-            )?
+                read_interactive_shell_scripted_event(
+                    tui_session.as_mut(),
+                    &driver,
+                    &shell,
+                    &session_id,
+                    &mut prompt_buffer,
+                    &mut completion_state,
+                    &mut history_state,
+                    &mut history_search_state,
+                    &mut overlay_state,
+                    scripted,
+                )?
         } else if use_line_input {
             print!("> ");
             io::stdout().flush()?;
@@ -3113,20 +5351,22 @@ fn run_interactive_shell(initial_prompt: Option<String>) -> Result<(), Box<dyn s
             let mut line = String::new();
             let bytes = stdin.read_line(&mut line)?;
             if bytes == 0 {
-                println!("leaving muldex interactive shell");
-                println!("To continue this session, run muldex resume {session_id}");
+                emit_interactive_shell_exit_notice(&mut tui_session, &session_id);
                 break;
             }
             Some(parse_interactive_shell_input(&line))
         } else {
-            read_interactive_shell_input_event(
-                &driver,
-                &shell,
-                &mut prompt_buffer,
-                &mut completion_state,
-                &mut history_state,
-                &mut history_search_state,
-            )?
+                read_interactive_shell_input_event(
+                    tui_session.as_mut(),
+                    &driver,
+                    &shell,
+                    &session_id,
+                    &mut prompt_buffer,
+                    &mut completion_state,
+                    &mut history_state,
+                    &mut history_search_state,
+                    &mut overlay_state,
+                )?
         };
 
         let Some(input) = input else {
@@ -3136,72 +5376,534 @@ fn run_interactive_shell(initial_prompt: Option<String>) -> Result<(), Box<dyn s
         match input {
             InteractiveShellInput::Empty => {}
             InteractiveShellInput::Exit => {
-                println!("leaving muldex interactive shell");
-                println!("To continue this session, run muldex resume {session_id}");
+                emit_interactive_shell_exit_notice(&mut tui_session, &session_id);
                 break;
             }
             InteractiveShellInput::Help => {
                 print_interactive_shell_help();
-                render_interactive_shell_view(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
+                if !interactive_shell_plain_output_enabled() {
+                    append_system_messages_to_active_session(interactive_shell_help_lines())?;
+                }
+                render_interactive_shell_view(
+                    tui_session.as_mut(),
+                    &driver,
+                    &shell,
+                    &session_id,
+                    &prompt_buffer,
+                    &completion_state,
+                    &history_state,
+        &history_search_state,
+        &overlay_state,
+    )?;
             }
             InteractiveShellInput::Status => {
                 print_interactive_shell_status(&driver, &shell);
-                render_interactive_shell_view(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
+                if !interactive_shell_plain_output_enabled() {
+                    append_system_messages_to_active_session(interactive_shell_status_lines(
+                        &driver, &shell,
+                    ))?;
+                }
+                render_interactive_shell_view(
+                    tui_session.as_mut(),
+                    &driver,
+                    &shell,
+                    &session_id,
+                    &prompt_buffer,
+                    &completion_state,
+                    &history_state,
+        &history_search_state,
+        &overlay_state,
+    )?;
             }
             InteractiveShellInput::SlashCommand(command) => {
                 handle_interactive_slash_command(&mut driver, &mut shell, command)?;
-                render_interactive_shell_view(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
+                refresh_interactive_shell_session_locals(
+                    &mut session_id,
+                    &mut shell,
+                    &mut prompt_buffer,
+                    &mut completion_state,
+                    &mut history_state,
+                    &mut history_search_state,
+                )?;
+                render_interactive_shell_view(
+                    tui_session.as_mut(),
+                    &driver,
+                    &shell,
+                    &session_id,
+                    &prompt_buffer,
+                    &completion_state,
+                    &history_state,
+        &history_search_state,
+        &overlay_state,
+    )?;
             }
             InteractiveShellInput::Prompt(prompt) => {
                 history_state.record_submission(&prompt);
-                handle_interactive_prompt(&mut driver, &shell, prompt)?;
-                render_interactive_shell_view(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
+        handle_interactive_prompt(&mut driver, &mut shell, prompt, &mut tui_session, &session_id, &prompt_buffer, &completion_state, &history_state, &history_search_state, &mut overlay_state)?;
+                render_interactive_shell_view(
+                    tui_session.as_mut(),
+                    &driver,
+                    &shell,
+                    &session_id,
+                    &prompt_buffer,
+                    &completion_state,
+                    &history_state,
+        &history_search_state,
+        &overlay_state,
+    )?;
             }
         }
 
         if !use_line_input {
-            render_interactive_shell_input_frame(&driver, &shell, &prompt_buffer, &completion_state, &history_state, &history_search_state)?;
+            let mut tui_session_ref = tui_session.as_mut();
+            render_interactive_shell_input_frame(
+                &mut tui_session_ref,
+                &driver,
+                &shell,
+                &session_id,
+                &prompt_buffer,
+                &completion_state,
+                &history_state,
+                &history_search_state,
+                &overlay_state,
+            )?;
         }
     }
 
-    Ok(())
+    if let Some(session) = tui_session.as_mut() {
+        let _ = session.reset_cursor();
+    }
+
+Ok(())
 }
 
+mod config {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use toml;
+
+    use crate::interactive_tui::keymap::{AppKeymap, ChatKeymap, ComposerKeymap, EditorKeymap, ListKeymap, PagerKeymap, ApprovalKeymap, RuntimeKeymap, KeyBinding, plain, ctrl, alt, shift};
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct MuldexConfig {
+        pub(crate) keymap: Option<KeymapConfig>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct KeymapConfig {
+        pub(crate) app: Option<AppKeymapOverride>,
+        pub(crate) chat: Option<ChatKeymapOverride>,
+        pub(crate) composer: Option<ComposerKeymapOverride>,
+        pub(crate) editor: Option<EditorKeymapOverride>,
+        pub(crate) pager: Option<PagerKeymapOverride>,
+        pub(crate) approval: Option<ApprovalKeymapOverride>,
+        pub(crate) list: Option<ListKeymapOverride>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct AppKeymapOverride {
+        pub(crate) open_transcript: Option<Vec<KeyBindingDef>>,
+        pub(crate) open_external_editor: Option<Vec<KeyBindingDef>>,
+        pub(crate) copy: Option<Vec<KeyBindingDef>>,
+        pub(crate) clear_terminal: Option<Vec<KeyBindingDef>>,
+        pub(crate) toggle_vim_mode: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct ChatKeymapOverride {
+        pub(crate) interrupt_turn: Option<Vec<KeyBindingDef>>,
+        pub(crate) decrease_reasoning_effort: Option<Vec<KeyBindingDef>>,
+        pub(crate) increase_reasoning_effort: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct ComposerKeymapOverride {
+        pub(crate) submit: Option<Vec<KeyBindingDef>>,
+        pub(crate) queue: Option<Vec<KeyBindingDef>>,
+        pub(crate) toggle_shortcuts: Option<Vec<KeyBindingDef>>,
+        pub(crate) history_search_previous: Option<Vec<KeyBindingDef>>,
+        pub(crate) history_search_next: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct EditorKeymapOverride {
+        pub(crate) insert_newline: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_left: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_right: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_up: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_down: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_word_left: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_word_right: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_line_start: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_line_end: Option<Vec<KeyBindingDef>>,
+        pub(crate) delete_backward: Option<Vec<KeyBindingDef>>,
+        pub(crate) delete_forward: Option<Vec<KeyBindingDef>>,
+        pub(crate) delete_backward_word: Option<Vec<KeyBindingDef>>,
+        pub(crate) delete_forward_word: Option<Vec<KeyBindingDef>>,
+        pub(crate) kill_line_start: Option<Vec<KeyBindingDef>>,
+        pub(crate) kill_whole_line: Option<Vec<KeyBindingDef>>,
+        pub(crate) kill_line_end: Option<Vec<KeyBindingDef>>,
+        pub(crate) yank: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct PagerKeymapOverride {
+        pub(crate) scroll_up: Option<Vec<KeyBindingDef>>,
+        pub(crate) scroll_down: Option<Vec<KeyBindingDef>>,
+        pub(crate) page_up: Option<Vec<KeyBindingDef>>,
+        pub(crate) page_down: Option<Vec<KeyBindingDef>>,
+        pub(crate) jump_top: Option<Vec<KeyBindingDef>>,
+        pub(crate) jump_bottom: Option<Vec<KeyBindingDef>>,
+        pub(crate) close: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct ApprovalKeymapOverride {
+        pub(crate) approve: Option<Vec<KeyBindingDef>>,
+        pub(crate) approve_session: Option<Vec<KeyBindingDef>>,
+        pub(crate) deny: Option<Vec<KeyBindingDef>>,
+        pub(crate) cancel: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct ListKeymapOverride {
+        pub(crate) move_up: Option<Vec<KeyBindingDef>>,
+        pub(crate) move_down: Option<Vec<KeyBindingDef>>,
+        pub(crate) accept: Option<Vec<KeyBindingDef>>,
+        pub(crate) cancel: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    pub(crate) struct KeyBindingDef {
+        pub(crate) key: String,
+        pub(crate) ctrl: Option<bool>,
+        pub(crate) alt: Option<bool>,
+        pub(crate) shift: Option<bool>,
+    }
+
+    impl KeyBindingDef {
+        fn to_key_binding(&self) -> KeyBinding {
+            let mut modifiers = KeyModifiers::NONE;
+            if self.ctrl.unwrap_or(false) { modifiers |= KeyModifiers::CONTROL; }
+            if self.alt.unwrap_or(false) { modifiers |= KeyModifiers::ALT; }
+            if self.shift.unwrap_or(false) { modifiers |= KeyModifiers::SHIFT; }
+            let code = parse_key_code(&self.key);
+            KeyBinding::new(code, modifiers)
+        }
+    }
+
+    fn parse_key_code(s: &str) -> KeyCode {
+        match s.to_lowercase().as_str() {
+            "enter" => KeyCode::Enter,
+            "tab" => KeyCode::Tab,
+            "backspace" => KeyCode::Backspace,
+            "delete" | "del" => KeyCode::Delete,
+            "esc" | "escape" => KeyCode::Esc,
+            "up" => KeyCode::Up,
+            "down" => KeyCode::Down,
+            "left" => KeyCode::Left,
+            "right" => KeyCode::Right,
+            "home" => KeyCode::Home,
+            "end" => KeyCode::End,
+            "pageup" | "page_up" => KeyCode::PageUp,
+            "pagedown" | "page_down" => KeyCode::PageDown,
+            "f1" => KeyCode::F(1),
+            "f2" => KeyCode::F(2),
+            "f3" => KeyCode::F(3),
+            "f4" => KeyCode::F(4),
+            "f5" => KeyCode::F(5),
+            "f6" => KeyCode::F(6),
+            "f7" => KeyCode::F(7),
+            "f8" => KeyCode::F(8),
+            "f9" => KeyCode::F(9),
+            "f10" => KeyCode::F(10),
+            "f11" => KeyCode::F(11),
+            "f12" => KeyCode::F(12),
+            "space" => KeyCode::Char(' '),
+            c if c.len() == 1 => KeyCode::Char(c.chars().next().unwrap()),
+            _ => KeyCode::Char('?'),
+        }
+    }
+
+    fn parse_modifiers(s: &str) -> KeyModifiers {
+        let mut mods = KeyModifiers::NONE;
+        for part in s.split('+') {
+            match part.trim().to_lowercase().as_str() {
+                "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
+                "alt" | "option" => mods |= KeyModifiers::ALT,
+                "shift" => mods |= KeyModifiers::SHIFT,
+                "super" | "meta" | "cmd" | "command" => mods |= KeyModifiers::SUPER,
+                _ => {}
+            }
+        }
+        mods
+    }
+
+    impl MuldexConfig {
+        pub(crate) fn load() -> Option<Self> {
+            let path = config_path()?;
+            let content = std::fs::read_to_string(&path).ok()?;
+            let toml_config: MuldexConfigToml = toml::from_str(&content).ok()?;
+            Some(toml_config.into())
+        }
+
+        pub(crate) fn apply_keymap(&self, keymap: &mut RuntimeKeymap) {
+            if let Some(kc) = &self.keymap {
+                if let Some(app) = &kc.app {
+                    if let Some(v) = &app.open_transcript { keymap.app.open_transcript = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &app.open_external_editor { keymap.app.open_external_editor = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &app.copy { keymap.app.copy = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &app.clear_terminal { keymap.app.clear_terminal = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &app.toggle_vim_mode { keymap.app.toggle_vim_mode = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+                if let Some(chat) = &kc.chat {
+                    if let Some(v) = &chat.interrupt_turn { keymap.chat.interrupt_turn = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &chat.decrease_reasoning_effort { keymap.chat.decrease_reasoning_effort = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &chat.increase_reasoning_effort { keymap.chat.increase_reasoning_effort = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+                if let Some(composer) = &kc.composer {
+                    if let Some(v) = &composer.submit { keymap.composer.submit = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &composer.queue { keymap.composer.queue = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &composer.toggle_shortcuts { keymap.composer.toggle_shortcuts = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &composer.history_search_previous { keymap.composer.history_search_previous = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &composer.history_search_next { keymap.composer.history_search_next = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+                if let Some(editor) = &kc.editor {
+                    if let Some(v) = &editor.insert_newline { keymap.editor.insert_newline = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_left { keymap.editor.move_left = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_right { keymap.editor.move_right = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_up { keymap.editor.move_up = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_down { keymap.editor.move_down = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_word_left { keymap.editor.move_word_left = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_word_right { keymap.editor.move_word_right = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_line_start { keymap.editor.move_line_start = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.move_line_end { keymap.editor.move_line_end = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.delete_backward { keymap.editor.delete_backward = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.delete_forward { keymap.editor.delete_forward = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.delete_backward_word { keymap.editor.delete_backward_word = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.delete_forward_word { keymap.editor.delete_forward_word = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.kill_line_start { keymap.editor.kill_line_start = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.kill_whole_line { keymap.editor.kill_whole_line = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.kill_line_end { keymap.editor.kill_line_end = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &editor.yank { keymap.editor.yank = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+                if let Some(pager) = &kc.pager {
+                    if let Some(v) = &pager.scroll_up { keymap.pager.scroll_up = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &pager.scroll_down { keymap.pager.scroll_down = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &pager.page_up { keymap.pager.page_up = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &pager.page_down { keymap.pager.page_down = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &pager.jump_top { keymap.pager.jump_top = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &pager.jump_bottom { keymap.pager.jump_bottom = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &pager.close { keymap.pager.close = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+                if let Some(approval) = &kc.approval {
+                    if let Some(v) = &approval.approve { keymap.approval.approve = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &approval.approve_session { keymap.approval.approve_session = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &approval.deny { keymap.approval.deny = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &approval.cancel { keymap.approval.cancel = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+                if let Some(list) = &kc.list {
+                    if let Some(v) = &list.move_up { keymap.list.move_up = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &list.move_down { keymap.list.move_down = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &list.accept { keymap.list.accept = v.iter().map(|b| b.to_key_binding()).collect(); }
+                    if let Some(v) = &list.cancel { keymap.list.cancel = v.iter().map(|b| b.to_key_binding()).collect(); }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct MuldexConfigToml {
+        keymap: Option<KeymapConfigToml>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct KeymapConfigToml {
+        app: Option<AppKeymapOverrideToml>,
+        chat: Option<ChatKeymapOverrideToml>,
+        composer: Option<ComposerKeymapOverrideToml>,
+        editor: Option<EditorKeymapOverrideToml>,
+        pager: Option<PagerKeymapOverrideToml>,
+        approval: Option<ApprovalKeymapOverrideToml>,
+        list: Option<ListKeymapOverrideToml>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct AppKeymapOverrideToml {
+        open_transcript: Option<Vec<KeyBindingDef>>,
+        open_external_editor: Option<Vec<KeyBindingDef>>,
+        copy: Option<Vec<KeyBindingDef>>,
+        clear_terminal: Option<Vec<KeyBindingDef>>,
+        toggle_vim_mode: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ChatKeymapOverrideToml {
+        interrupt_turn: Option<Vec<KeyBindingDef>>,
+        decrease_reasoning_effort: Option<Vec<KeyBindingDef>>,
+        increase_reasoning_effort: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ComposerKeymapOverrideToml {
+        submit: Option<Vec<KeyBindingDef>>,
+        queue: Option<Vec<KeyBindingDef>>,
+        toggle_shortcuts: Option<Vec<KeyBindingDef>>,
+        history_search_previous: Option<Vec<KeyBindingDef>>,
+        history_search_next: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct EditorKeymapOverrideToml {
+        insert_newline: Option<Vec<KeyBindingDef>>,
+        move_left: Option<Vec<KeyBindingDef>>,
+        move_right: Option<Vec<KeyBindingDef>>,
+        move_up: Option<Vec<KeyBindingDef>>,
+        move_down: Option<Vec<KeyBindingDef>>,
+        move_word_left: Option<Vec<KeyBindingDef>>,
+        move_word_right: Option<Vec<KeyBindingDef>>,
+        move_line_start: Option<Vec<KeyBindingDef>>,
+        move_line_end: Option<Vec<KeyBindingDef>>,
+        delete_backward: Option<Vec<KeyBindingDef>>,
+        delete_forward: Option<Vec<KeyBindingDef>>,
+        delete_backward_word: Option<Vec<KeyBindingDef>>,
+        delete_forward_word: Option<Vec<KeyBindingDef>>,
+        kill_line_start: Option<Vec<KeyBindingDef>>,
+        kill_whole_line: Option<Vec<KeyBindingDef>>,
+        kill_line_end: Option<Vec<KeyBindingDef>>,
+        yank: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct PagerKeymapOverrideToml {
+        scroll_up: Option<Vec<KeyBindingDef>>,
+        scroll_down: Option<Vec<KeyBindingDef>>,
+        page_up: Option<Vec<KeyBindingDef>>,
+        page_down: Option<Vec<KeyBindingDef>>,
+        jump_top: Option<Vec<KeyBindingDef>>,
+        jump_bottom: Option<Vec<KeyBindingDef>>,
+        close: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ApprovalKeymapOverrideToml {
+        approve: Option<Vec<KeyBindingDef>>,
+        approve_session: Option<Vec<KeyBindingDef>>,
+        deny: Option<Vec<KeyBindingDef>>,
+        cancel: Option<Vec<KeyBindingDef>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ListKeymapOverrideToml {
+        move_up: Option<Vec<KeyBindingDef>>,
+        move_down: Option<Vec<KeyBindingDef>>,
+        accept: Option<Vec<KeyBindingDef>>,
+        cancel: Option<Vec<KeyBindingDef>>,
+    }
+
+    impl From<MuldexConfigToml> for MuldexConfig {
+        fn from(t: MuldexConfigToml) -> Self {
+            Self {
+                keymap: t.keymap.map(|k| KeymapConfig {
+                    app: k.app.map(|a| AppKeymapOverride {
+                        open_transcript: a.open_transcript,
+                        open_external_editor: a.open_external_editor,
+                        copy: a.copy,
+                        clear_terminal: a.clear_terminal,
+                        toggle_vim_mode: a.toggle_vim_mode,
+                    }),
+                    chat: k.chat.map(|c| ChatKeymapOverride {
+                        interrupt_turn: c.interrupt_turn,
+                        decrease_reasoning_effort: c.decrease_reasoning_effort,
+                        increase_reasoning_effort: c.increase_reasoning_effort,
+                    }),
+                    composer: k.composer.map(|c| ComposerKeymapOverride {
+                        submit: c.submit,
+                        queue: c.queue,
+                        toggle_shortcuts: c.toggle_shortcuts,
+                        history_search_previous: c.history_search_previous,
+                        history_search_next: c.history_search_next,
+                    }),
+                    editor: k.editor.map(|e| EditorKeymapOverride {
+                        insert_newline: e.insert_newline,
+                        move_left: e.move_left,
+                        move_right: e.move_right,
+                        move_up: e.move_up,
+                        move_down: e.move_down,
+                        move_word_left: e.move_word_left,
+                        move_word_right: e.move_word_right,
+                        move_line_start: e.move_line_start,
+                        move_line_end: e.move_line_end,
+                        delete_backward: e.delete_backward,
+                        delete_forward: e.delete_forward,
+                        delete_backward_word: e.delete_backward_word,
+                        delete_forward_word: e.delete_forward_word,
+                        kill_line_start: e.kill_line_start,
+                        kill_whole_line: e.kill_whole_line,
+                        kill_line_end: e.kill_line_end,
+                        yank: e.yank,
+                    }),
+                    pager: k.pager.map(|p| PagerKeymapOverride {
+                        scroll_up: p.scroll_up,
+                        scroll_down: p.scroll_down,
+                        page_up: p.page_up,
+                        page_down: p.page_down,
+                        jump_top: p.jump_top,
+                        jump_bottom: p.jump_bottom,
+                        close: p.close,
+                    }),
+                    approval: k.approval.map(|a| ApprovalKeymapOverride {
+                        approve: a.approve,
+                        approve_session: a.approve_session,
+                        deny: a.deny,
+                        cancel: a.cancel,
+                    }),
+                    list: k.list.map(|l| ListKeymapOverride {
+                        move_up: l.move_up,
+                        move_down: l.move_down,
+                        accept: l.accept,
+                        cancel: l.cancel,
+                    }),
+                }),
+            }
+        }
+    }
+
+    pub(crate) fn config_path() -> Option<PathBuf> {
+dirs::config_dir().map(|mut p| {
+            p.push("muldex");
+            p.push("config.toml");
+            p
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use muldex_core::protocol::ApprovalPolicyDescriptor;
-    use muldex_core::protocol::ContextPressure;
-    use muldex_core::protocol::ContinueReason;
-    use muldex_core::protocol::ContinueRequest;
-    use muldex_core::protocol::ExecutionMode;
-    use muldex_core::protocol::InterruptQueueState;
-    use muldex_core::protocol::PendingApprovalState;
-    use muldex_core::protocol::PermissionContextSnapshot;
-    use muldex_core::protocol::PostCompactionState;
-    use muldex_core::protocol::ProgressSnapshot;
-    use muldex_core::protocol::RecoverySnapshot;
-    use muldex_core::protocol::RuntimeModeState;
-    use muldex_core::protocol::SandboxModeDescriptor;
-    use muldex_core::protocol::SelfCorrectionState;
     use muldex_core::protocol::StateChangeKind;
-    use muldex_runtime::client_views::ClientResponsePayloadView;
-    use muldex_runtime::client_views::response_view;
-    use muldex_runtime::daemon::RuntimeDaemon;
     use muldex_runtime::continuity::ExportedReportView;
-    use muldex_runtime::runtime::RuntimePhase;
-    use muldex_runtime::runtime::RuntimeState;
-    use std::sync::{Mutex, OnceLock};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
 
     fn config_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    fn cleanup(path: &PathBuf) {
+        let _ = std::fs::remove_file(path);
+    }
+
     fn sample_state() -> RuntimeState {
         RuntimeState {
             request: ContinueRequest {
-                thread_id: "thread-1".to_string(),
+                thread_id: "thread-sample".to_string(),
                 turn_id: "turn-1".to_string(),
                 objective: "continue task".to_string(),
                 constraints: vec!["do not spin".to_string()],
@@ -3260,201 +5962,6 @@ mod tests {
         }
     }
 
-    fn temp_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(name)
-    }
-
-    fn cleanup(path: &PathBuf) {
-        let _ = std::fs::remove_file(path);
-        let transport_root = transport_root_for_snapshot(path);
-        let _ = std::fs::remove_dir_all(&transport_root);
-        let runtime_root = path
-            .parent()
-            .map(|parent| {
-                let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or(".muldex-daemon");
-                parent.join(format!("{stem}.muldex-daemon"))
-            })
-            .unwrap_or_else(|| PathBuf::from(".muldex-daemon"));
-        let _ = std::fs::remove_dir_all(runtime_root);
-    }
-
-    #[test]
-    fn client_send_command_and_read_response_round_trip() {
-        let path = temp_root("muldex-cli-client-roundtrip.json");
-        cleanup(&path);
-
-        let mut daemon = RuntimeDaemon::new(&path);
-        daemon.boot_empty().expect("boot daemon");
-        daemon
-            .host_mut()
-            .expect("host")
-            .create_session("session-1", sample_state())
-            .expect("create session");
-        daemon.save().expect("save daemon");
-
-        client_send_command(
-            path.clone(),
-            "cmd-cli-1".to_string(),
-            "session-1".to_string(),
-            DaemonCommandKindArg::Status,
-            ClientAccessModeArg::ReadOnly,
-        )
-        .expect("send command");
-
-        let transport = FileCommandTransport::new(transport_root_for_snapshot(&path));
-        let commands = transport.list_commands().expect("list commands");
-        assert_eq!(commands.len(), 1);
-
-        daemon.serve_once().expect("serve once");
-
-        let response = transport.read_response("cmd-cli-1").expect("read response");
-        let view = response_view(response);
-        assert!(view.ok);
-        match view.payload.expect("payload") {
-            ClientResponsePayloadView::Step { phase, cycle_index, .. } => {
-                assert_eq!(phase, "Running");
-                assert_eq!(cycle_index, 1);
-            }
-            _ => panic!("expected step payload"),
-        }
-
-        daemon.shutdown().expect("shutdown daemon");
-        cleanup(&path);
-    }
-
-    #[test]
-    fn client_send_command_rejects_mutation_in_read_only_mode() {
-        let path = temp_root("muldex-cli-client-read-only.json");
-        cleanup(&path);
-
-        let error = client_send_command(
-            path,
-            "cmd-cli-2".to_string(),
-            "session-1".to_string(),
-            DaemonCommandKindArg::AdvanceSample,
-            ClientAccessModeArg::ReadOnly,
-        )
-        .expect_err("read-only gate should reject mutation");
-
-        assert!(error
-            .to_string()
-            .contains("client access mode ReadOnly does not allow command kind advance-sample"));
-    }
-
-    #[test]
-    fn interactive_shell_input_parses_core_commands() {
-        assert_eq!(parse_interactive_shell_input("   "), InteractiveShellInput::Empty);
-        assert_eq!(parse_interactive_shell_input("/help"), InteractiveShellInput::Help);
-        assert_eq!(parse_interactive_shell_input("/status"), InteractiveShellInput::Status);
-        assert_eq!(parse_interactive_shell_input("/exit"), InteractiveShellInput::Exit);
-        assert_eq!(
-            parse_interactive_shell_input("/model"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Model(None))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/model gpt-5"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Model(Some(
-                "gpt-5".to_string()
-            )))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/approval on-request"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Approval(Some(
-                "on-request".to_string()
-            )))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/compact"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Compact)
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/sessions"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Sessions)
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/resume"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Resume(None))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/resume session-2"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Resume(Some(
-                "session-2".to_string()
-            )))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/new"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::New)
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/config llm host 127.0.0.1"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::ConfigLlm(
-                InteractiveLlmConfigCommand::SetHost("127.0.0.1".to_string())
-            ))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/config llm test"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::ConfigLlm(
-                InteractiveLlmConfigCommand::Test
-            ))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/provider use openai-prod"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Provider(
-                InteractiveProviderCommand::Use("openai-prod".to_string())
-            ))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/provider test openai-prod"),
-            InteractiveShellInput::SlashCommand(InteractiveSlashCommand::Provider(
-                InteractiveProviderCommand::Test(Some("openai-prod".to_string()))
-            ))
-        );
-        assert_eq!(
-            parse_interactive_shell_input("hello runtime"),
-            InteractiveShellInput::Prompt("hello runtime".to_string())
-        );
-        assert_eq!(
-            parse_interactive_shell_input("/model\nsecond line"),
-            InteractiveShellInput::Prompt("/model\nsecond line".trim().to_string())
-        );
-    }
-
-    #[test]
-    fn slash_command_messages_persist_through_store_save() {
-        let path = temp_root("muldex-cli-interactive-store.json");
-        cleanup(&path);
-        unsafe {
-            std::env::set_var("MULDEX_INTERACTIVE_SHELL_PATH", &path);
-        }
-
-        let store = interactive_shell_store_with_default_session();
-        save_interactive_shell_store(&store).expect("save store");
-        let snapshot = active_interactive_shell_snapshot(&store).expect("active snapshot");
-        let mut driver = RuntimeDriver::new(snapshot.runtime.clone());
-        let mut shell = snapshot.shell.clone();
-
-        handle_interactive_slash_command(
-            &mut driver,
-            &mut shell,
-            InteractiveSlashCommand::Model(Some("gpt-5-persist".to_string())),
-        )
-        .expect("handle slash command");
-
-        let loaded_store = load_interactive_shell_store()
-            .expect("load store")
-            .expect("store present");
-        let loaded_snapshot = active_interactive_shell_snapshot(&loaded_store).expect("active snapshot");
-        assert!(loaded_snapshot
-            .messages
-            .iter()
-            .any(|message| message.content.contains("/model set to gpt-5-persist")));
-
-        unsafe {
-            std::env::remove_var("MULDEX_INTERACTIVE_SHELL_PATH");
-        }
-        cleanup(&path);
-    }
-
     #[test]
     fn llm_router_config_commands_persist_user_config() {
         let _guard = config_env_lock().lock().expect("config env lock");
@@ -3464,16 +5971,18 @@ mod tests {
             std::env::set_var("MULDEX_CONFIG_PATH", &config_path);
         }
 
-        let message = handle_interactive_llm_config_command(
-            InteractiveLlmConfigCommand::SetHost("127.0.0.1".to_string()),
-        )
+        let message = handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetHost(
+            "127.0.0.1".to_string(),
+        ))
         .expect("set host");
         assert!(message.contains("llm-router host set to 127.0.0.1"));
 
         handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetPort(3000))
             .expect("set port");
-        handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetApiKey("secret-key".to_string()))
-            .expect("set api key");
+        handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetApiKey(
+            "secret-key".to_string(),
+        ))
+        .expect("set api key");
 
         let config = load_muldex_config().expect("load config");
         let router = llm_router_provider(&config).expect("router config");
@@ -3517,8 +6026,14 @@ mod tests {
 
         let loaded = load_muldex_config().expect("load config");
         assert_eq!(loaded.default_provider.as_deref(), Some("openai-prod"));
-        let provider = loaded.providers.get("openai-prod").expect("provider present");
-        assert_eq!(provider.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        let provider = loaded
+            .providers
+            .get("openai-prod")
+            .expect("provider present");
+        assert_eq!(
+            provider.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
         assert_eq!(provider.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
 
         unsafe {
@@ -3569,8 +6084,10 @@ mod tests {
         };
         save_muldex_config(&config).expect("save config");
 
-        let message = handle_interactive_provider_command(InteractiveProviderCommand::Use("openai-prod".to_string()))
-            .expect("switch provider");
+        let message = handle_interactive_provider_command(InteractiveProviderCommand::Use(
+            "openai-prod".to_string(),
+        ))
+        .expect("switch provider");
         assert!(message.contains("default provider set to openai-prod"));
 
         let loaded = load_muldex_config().expect("load config");
@@ -3655,8 +6172,10 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
         let port = listener.local_addr().expect("local addr").port();
 
-        handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetHost("127.0.0.1".to_string()))
-            .expect("set host");
+        handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetHost(
+            "127.0.0.1".to_string(),
+        ))
+        .expect("set host");
         handle_interactive_llm_config_command(InteractiveLlmConfigCommand::SetPort(port))
             .expect("set port");
 
@@ -3716,55 +6235,6 @@ mod tests {
     }
 
     #[test]
-    fn interactive_slash_hint_lines_mark_active_row() {
-        let mut buffer = InteractivePromptBuffer {
-            text: "/".to_string(),
-            cursor: 1,
-        };
-        let mut completion = InteractiveSlashCompletionState::default();
-        completion.update_from_buffer(&buffer);
-        completion.select_next();
-
-        let lines = render_interactive_slash_hint_lines(&buffer, &completion);
-        assert_eq!(lines[0], "slash commands:");
-        assert!(lines.iter().any(|line| line.starts_with("> /status - ")));
-        assert!(lines.iter().any(|line| line.starts_with("  /help - ")));
-
-        buffer.text = "hello".to_string();
-        assert!(render_interactive_slash_hint_lines(&buffer, &completion).is_empty());
-    }
-
-    #[test]
-    fn interactive_history_search_lines_show_query_and_match() {
-        let history = InteractiveHistoryState::from_entries(vec!["alpha".to_string(), "beta".to_string()]);
-        let mut search = InteractiveHistorySearchState::default();
-        let mut buffer = InteractivePromptBuffer {
-            text: "be".to_string(),
-            cursor: 2,
-        };
-        assert!(search.reverse_search(&history, &mut buffer));
-
-        let lines = render_interactive_history_search_lines(&history, &search);
-        assert_eq!(lines[0], "reverse search active: be");
-        assert_eq!(lines[1], "matches: 1");
-        assert_eq!(lines[2], "match_index: 1/1");
-        assert_eq!(lines[3], "match: beta");
-    }
-
-    #[test]
-    fn interactive_history_search_lines_show_no_match_feedback() {
-        let history = InteractiveHistoryState::from_entries(vec!["alpha".to_string()]);
-        let mut search = InteractiveHistorySearchState::default();
-        search.active = true;
-        search.query = "zzz".to_string();
-
-        let lines = render_interactive_history_search_lines(&history, &search);
-        assert_eq!(lines[0], "reverse search active: zzz");
-        assert_eq!(lines[1], "matches: 0");
-        assert_eq!(lines[2], "match: none");
-    }
-
-    #[test]
     fn interactive_key_handler_submits_multiline_slash_buffer_as_prompt() {
         let mut buffer = InteractivePromptBuffer {
             text: "/model\nsecond line".to_string(),
@@ -3773,6 +6243,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -3780,6 +6252,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(
@@ -3792,6 +6266,34 @@ mod tests {
     }
 
     #[test]
+    fn interactive_key_handler_ignores_key_release_events() {
+        let mut buffer = InteractivePromptBuffer::default();
+        let mut completion = InteractiveSlashCompletionState::default();
+        let mut history = InteractiveHistoryState::default();
+        let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
+
+        let action = handle_interactive_key_event(
+            KeyEvent {
+                code: KeyCode::Char('e'),
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Release,
+                state: crossterm::event::KeyEventState::NONE,
+            },
+            &mut buffer,
+            &mut completion,
+            &mut history,
+            &mut search,
+            &mut overlay,
+            session_id,
+        );
+
+        assert_eq!(action, InteractiveKeyAction::Noop);
+        assert!(buffer.text.is_empty());
+    }
+
+    #[test]
     fn interactive_key_handler_preserves_tab_for_non_slash_content() {
         let mut buffer = InteractivePromptBuffer {
             text: "hello".to_string(),
@@ -3800,6 +6302,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
@@ -3807,6 +6311,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::Noop);
@@ -3822,6 +6328,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -3829,6 +6337,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
         assert_eq!(completion.current_command(), Some("/status"));
@@ -3839,6 +6349,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
         assert_eq!(completion.current_command(), Some("/help"));
@@ -3854,6 +6366,8 @@ mod tests {
         completion.update_from_buffer(&buffer);
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -3861,6 +6375,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
@@ -3879,6 +6395,8 @@ mod tests {
         completion.visible = false;
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -3886,6 +6404,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
@@ -3902,6 +6422,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let _ = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -3909,6 +6431,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
@@ -3916,6 +6440,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
@@ -3931,6 +6457,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let _ = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -3938,6 +6466,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -3945,6 +6475,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
@@ -3953,10 +6485,8 @@ mod tests {
 
     #[test]
     fn interactive_history_state_replays_and_restores_draft() {
-        let mut history = InteractiveHistoryState::from_entries(vec![
-            "first".to_string(),
-            "second".to_string(),
-        ]);
+        let mut history =
+            InteractiveHistoryState::from_entries(vec!["first".to_string(), "second".to_string()]);
         let mut buffer = InteractivePromptBuffer {
             text: "draft".to_string(),
             cursor: 5,
@@ -3981,7 +6511,10 @@ mod tests {
         history.record_submission("next");
         history.record_submission("next");
 
-        assert_eq!(history.entries, vec!["same".to_string(), "next".to_string()]);
+        assert_eq!(
+            history.entries,
+            vec!["same".to_string(), "next".to_string()]
+        );
     }
 
     #[test]
@@ -3992,6 +6525,8 @@ mod tests {
             "alpha review".to_string(),
         ]);
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
         let mut buffer = InteractivePromptBuffer {
             text: "alpha".to_string(),
             cursor: 5,
@@ -4010,6 +6545,8 @@ mod tests {
             "second fix".to_string(),
         ]);
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
         let mut buffer = InteractivePromptBuffer {
             text: "fi".to_string(),
             cursor: 2,
@@ -4051,6 +6588,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::from_entries(vec!["past".to_string()]);
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -4058,6 +6597,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawPrompt);
@@ -4076,6 +6617,8 @@ mod tests {
             "second fix".to_string(),
         ]);
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
@@ -4083,6 +6626,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
@@ -4098,6 +6643,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::from_entries(vec!["second fix".to_string()]);
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let _ = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
@@ -4105,6 +6652,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -4112,6 +6661,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
 
         assert_eq!(action, InteractiveKeyAction::RedrawFrame);
@@ -4128,6 +6679,8 @@ mod tests {
         let mut completion = InteractiveSlashCompletionState::default();
         let mut history = InteractiveHistoryState::default();
         let mut search = InteractiveHistorySearchState::default();
+        let mut overlay = interactive_tui::overlay::OverlayState::default();
+        let session_id = "test-session";
 
         let action = handle_interactive_key_event(
             KeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
@@ -4135,6 +6688,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         assert_eq!(action, InteractiveKeyAction::RedrawPrompt);
         assert_eq!(buffer.cursor, "alpha ".len());
@@ -4145,6 +6700,8 @@ mod tests {
             &mut completion,
             &mut history,
             &mut search,
+            &mut overlay,
+            session_id,
         );
         assert_eq!(action, InteractiveKeyAction::RedrawPrompt);
         assert_eq!(buffer.text, "beta");
@@ -4158,7 +6715,10 @@ mod tests {
         };
         let mut completion = InteractiveSlashCompletionState::default();
 
-        assert!(!apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(!apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "/zzz");
         assert!(completion.matches.is_empty());
     }
@@ -4171,7 +6731,10 @@ mod tests {
         };
         let mut completion = InteractiveSlashCompletionState::default();
 
-        assert!(apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "/resume");
         assert_eq!(buffer.cursor, "/resume".len());
         assert_eq!(completion.matches, vec!["/resume"]);
@@ -4185,13 +6748,22 @@ mod tests {
         };
         let mut completion = InteractiveSlashCompletionState::default();
 
-        assert!(apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "/help");
 
-        assert!(apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "/status");
 
-        assert!(apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "/model");
     }
 
@@ -4203,7 +6775,10 @@ mod tests {
         };
         let mut completion = InteractiveSlashCompletionState::default();
 
-        assert!(apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "/model\nsecond line");
         assert_eq!(buffer.cursor, "/model\nsecond line".len());
     }
@@ -4216,7 +6791,10 @@ mod tests {
         };
         let mut completion = InteractiveSlashCompletionState::default();
 
-        assert!(!apply_interactive_slash_completion(&mut buffer, &mut completion));
+        assert!(!apply_interactive_slash_completion(
+            &mut buffer,
+            &mut completion
+        ));
         assert_eq!(buffer.text, "plain input");
         assert_eq!(buffer.cursor, "plain input".len());
     }
@@ -4261,21 +6839,23 @@ mod tests {
             .expect("host")
             .apply_command(
                 "session-inspect-1",
-                muldex_runtime::runtime::RuntimeCommand::Decision(muldex_core::protocol::ContinueDecision {
-                    allow_continue: true,
-                    mode: muldex_core::protocol::ContinueMode::NextTurn,
-                    rationale: "seed report for inspect".to_string(),
-                    next_action: None,
-                    pause_for_approval: false,
-                    consume_interrupts_now: false,
-                    may_continue_other_work: true,
-                    suppress_duplicate_injection: false,
-                    downgrade_trigger_turn: false,
-                    request_compaction: false,
-                    request_handoff_summary: false,
-                    request_checkpoint: false,
-                    enter_self_correction: false,
-                }),
+                muldex_runtime::runtime::RuntimeCommand::Decision(
+                    muldex_core::protocol::ContinueDecision {
+                        allow_continue: true,
+                        mode: muldex_core::protocol::ContinueMode::NextTurn,
+                        rationale: "seed report for inspect".to_string(),
+                        next_action: None,
+                        pause_for_approval: false,
+                        consume_interrupts_now: false,
+                        may_continue_other_work: true,
+                        suppress_duplicate_injection: false,
+                        downgrade_trigger_turn: false,
+                        request_compaction: false,
+                        request_handoff_summary: false,
+                        request_checkpoint: false,
+                        enter_self_correction: false,
+                    },
+                ),
             )
             .expect("apply command");
         daemon.save().expect("save daemon");
@@ -4317,21 +6897,23 @@ mod tests {
             .expect("host")
             .apply_command(
                 "session-inspect-2",
-                muldex_runtime::runtime::RuntimeCommand::Decision(muldex_core::protocol::ContinueDecision {
-                    allow_continue: true,
-                    mode: muldex_core::protocol::ContinueMode::NextTurn,
-                    rationale: "seed report for compressed inspect".to_string(),
-                    next_action: None,
-                    pause_for_approval: false,
-                    consume_interrupts_now: false,
-                    may_continue_other_work: true,
-                    suppress_duplicate_injection: false,
-                    downgrade_trigger_turn: false,
-                    request_compaction: false,
-                    request_handoff_summary: false,
-                    request_checkpoint: false,
-                    enter_self_correction: false,
-                }),
+                muldex_runtime::runtime::RuntimeCommand::Decision(
+                    muldex_core::protocol::ContinueDecision {
+                        allow_continue: true,
+                        mode: muldex_core::protocol::ContinueMode::NextTurn,
+                        rationale: "seed report for compressed inspect".to_string(),
+                        next_action: None,
+                        pause_for_approval: false,
+                        consume_interrupts_now: false,
+                        may_continue_other_work: true,
+                        suppress_duplicate_injection: false,
+                        downgrade_trigger_turn: false,
+                        request_compaction: false,
+                        request_handoff_summary: false,
+                        request_checkpoint: false,
+                        enter_self_correction: false,
+                    },
+                ),
             )
             .expect("apply command");
         daemon.save().expect("save daemon");
@@ -4355,6 +6937,142 @@ mod tests {
         daemon.shutdown().expect("shutdown daemon");
         cleanup(&path);
     }
+
+    #[test]
+    fn active_provider_is_configured_only_when_default_provider_entry_exists() {
+        let mut config = MuldexConfig {
+            schema_version: "muldex-config-v1".to_string(),
+            default_provider: Some("router-a".to_string()),
+            providers: BTreeMap::new(),
+            llm_router: None,
+        };
+
+        assert!(!active_provider_is_configured(&config));
+
+        config.providers.insert(
+            "router-a".to_string(),
+            ProviderConfig {
+                kind: "openai-compatible".to_string(),
+                host: Some("127.0.0.1".to_string()),
+                port: Some(3000),
+                base_url: None,
+                api_key: None,
+                api_key_env: None,
+                default_model: Some("gpt-5.4".to_string()),
+            },
+        );
+
+        assert!(active_provider_is_configured(&config));
+    }
+
+    #[test]
+    fn active_provider_summary_returns_empty_when_default_provider_entry_missing() {
+        let config = MuldexConfig {
+            schema_version: "muldex-config-v1".to_string(),
+            default_provider: Some("router-a".to_string()),
+            providers: BTreeMap::new(),
+            llm_router: None,
+        };
+
+        assert!(
+            active_provider_summary(&config, &sample_state(), &interactive_shell_state())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn active_provider_name_falls_back_to_llm_router_when_default_provider_missing() {
+        let config = MuldexConfig {
+            schema_version: "muldex-config-v1".to_string(),
+            default_provider: None,
+            providers: BTreeMap::from([(
+                "llm-router".to_string(),
+                ProviderConfig {
+                    kind: "openai-compatible".to_string(),
+                    host: Some("127.0.0.1".to_string()),
+                    port: Some(3000),
+                    base_url: None,
+                    api_key: None,
+                    api_key_env: None,
+                    default_model: Some("gpt-5.4".to_string()),
+                },
+            )]),
+            llm_router: None,
+        };
+
+        assert_eq!(active_provider_name(&config), Some("llm-router".to_string()));
+        assert!(active_provider_is_configured(&config));
+    }
+
+    #[test]
+    fn interactive_shell_exit_notice_lines_include_resume_hint() {
+        let lines = interactive_shell_exit_notice_lines("interactive-session-123");
+        assert_eq!(lines[0], "leaving muldex interactive shell");
+        assert!(lines[1].contains("muldex resume interactive-session-123"));
+    }
+
+    fn vim_key(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty())
+    }
+
+    fn vim_key_code(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn vim_buffer(text: &str) -> InteractivePromptBuffer {
+        let mut b = InteractivePromptBuffer::default();
+        b.text = text.to_string();
+        b.cursor = text.len();
+        b
+    }
+
+    #[test]
+    fn vim_normal_mode_moves_and_toggles_insert() {
+        let mut st = VimState::new(true);
+        let mut b = vim_buffer("hello world");
+        vim_normal_key(&mut st, vim_key('h'), &mut b);
+        vim_normal_key(&mut st, vim_key('h'), &mut b);
+        assert_eq!(b.cursor, "hello wor".len());
+        vim_normal_key(&mut st, vim_key('i'), &mut b);
+        assert!(!st.normal);
+        vim_normal_key(&mut st, vim_key_code(KeyCode::Esc), &mut b);
+        assert!(st.normal);
+    }
+
+    #[test]
+    fn vim_word_back_motion_and_delete_word() {
+        let mut st = VimState::new(true);
+        let mut b = vim_buffer("the quick brown fox");
+        vim_normal_key(&mut st, vim_key('b'), &mut b);
+        assert_eq!(&b.text[..b.cursor], "the quick brown ");
+        vim_normal_key(&mut st, vim_key('d'), &mut b);
+        vim_normal_key(&mut st, vim_key('w'), &mut b);
+        assert_eq!(b.text, "the quick brown ");
+        assert_eq!(st.ring.last().map(|s| s.as_str()), Some("fox"));
+    }
+
+    #[test]
+    fn vim_yank_word_and_put_uses_kill_ring() {
+        let mut st = VimState::new(true);
+        let mut b = vim_buffer("abc def");
+        vim_normal_key(&mut st, vim_key('b'), &mut b);
+        vim_normal_key(&mut st, vim_key('y'), &mut b);
+        vim_normal_key(&mut st, vim_key('w'), &mut b);
+        assert_eq!(st.ring.last().map(|s| s.as_str()), Some("def"));
+        vim_normal_key(&mut st, vim_key('p'), &mut b);
+        assert_eq!(b.text, "abc defdef");
+    }
+
+    #[test]
+    fn vim_delete_line_removes_current_line() {
+        let mut st = VimState::new(true);
+        let mut b = InteractivePromptBuffer::default();
+        b.text = "line one\nline two\nline three".to_string();
+        b.cursor = b.text.find("line two").unwrap() + 3;
+        vim_normal_key(&mut st, vim_key('d'), &mut b);
+        vim_normal_key(&mut st, vim_key('d'), &mut b);
+        assert_eq!(b.text, "line one\nline three");
+    }
 }
 
 fn print_bootstrap_snapshot_summary(snapshot: &CodexBootstrapSnapshot) {
@@ -4365,8 +7083,14 @@ fn print_bootstrap_snapshot_summary(snapshot: &CodexBootstrapSnapshot) {
     println!("snapshot.personality: {:?}", snapshot.personality);
     println!("snapshot.approval_policy: {}", snapshot.approval_policy);
     println!("snapshot.service_tier: {:?}", snapshot.service_tier);
-    println!("snapshot.show_raw_agent_reasoning: {}", snapshot.show_raw_agent_reasoning);
-    println!("snapshot.reference_context: {}", snapshot.reference_context_present);
+    println!(
+        "snapshot.show_raw_agent_reasoning: {}",
+        snapshot.show_raw_agent_reasoning
+    );
+    println!(
+        "snapshot.reference_context: {}",
+        snapshot.reference_context_present
+    );
     println!("snapshot.input_modalities: {:?}", snapshot.input_modalities);
     println!("snapshot.tools_visible: {}", snapshot.tools_visible_count);
 }
@@ -4374,8 +7098,14 @@ fn print_bootstrap_snapshot_summary(snapshot: &CodexBootstrapSnapshot) {
 fn print_live_snapshot_summary(snapshot: &CodexLiveContinuationSnapshot) {
     println!("snapshot.kind: codex-live");
     println!("snapshot.thread_id: {}", snapshot.thread_id);
-    println!("snapshot.active_turn_present: {}", snapshot.active_turn_present);
-    println!("snapshot.pending_input_present: {}", snapshot.pending_input_present);
+    println!(
+        "snapshot.active_turn_present: {}",
+        snapshot.active_turn_present
+    );
+    println!(
+        "snapshot.pending_input_present: {}",
+        snapshot.pending_input_present
+    );
     println!(
         "snapshot.trigger_turn_mailbox_present: {}",
         snapshot.trigger_turn_mailbox_present
@@ -4384,7 +7114,10 @@ fn print_live_snapshot_summary(snapshot: &CodexLiveContinuationSnapshot) {
         "snapshot.auto_compact_window_number: {}",
         snapshot.auto_compact_window_number
     );
-    println!("snapshot.total_input_tokens: {:?}", snapshot.total_input_tokens);
+    println!(
+        "snapshot.total_input_tokens: {:?}",
+        snapshot.total_input_tokens
+    );
 }
 
 fn build_workspace_request(
@@ -4397,14 +7130,18 @@ fn build_workspace_request(
     recoverable_failure: bool,
 ) -> Result<ReasoningHarnessRequest, Box<dyn std::error::Error>> {
     if !workspace.exists() || !workspace.is_dir() {
-        return Err(format!("workspace does not exist or is not a directory: {}", workspace.display()).into());
+        return Err(format!(
+            "workspace does not exist or is not a directory: {}",
+            workspace.display()
+        )
+        .into());
     }
 
     let objective = match (objective, objective_file) {
         (Some(text), None) => text,
         (None, Some(path)) => fs::read_to_string(path)?,
         (Some(_), Some(_)) => {
-            return Err("provide either --objective or --objective-file, not both".into())
+            return Err("provide either --objective or --objective-file, not both".into());
         }
         (None, None) => return Err("provide --objective or --objective-file".into()),
     };
@@ -4434,9 +7171,8 @@ fn build_workspace_request(
         request.recovery.last_recovery_had_progress = false;
         request.self_correction.active = true;
         request.self_correction.correction_attempt_count = 1;
-        request.self_correction.last_correction_target = Some(
-            "retry failed step in real workspace".to_string(),
-        );
+        request.self_correction.last_correction_target =
+            Some("retry failed step in real workspace".to_string());
     }
 
     Ok(request)
@@ -4486,7 +7222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!();
                         codex_bootstrap_snapshot_to_harness_request(bootstrap)
                     }
-                }
+                },
             };
             let decision = decide_reasoning_harness(&request);
             print_decision(&decision);

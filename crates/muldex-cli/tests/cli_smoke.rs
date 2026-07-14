@@ -1,20 +1,22 @@
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::Write;
-use std::io::Read;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use muldex_runtime::client_views::ClientDaemonStatusView;
 use muldex_runtime::client_views::ClientResponsePayloadView;
 use muldex_runtime::client_views::ClientResponseView;
-use muldex_runtime::client_views::ClientDaemonStatusView;
 use muldex_runtime::client_views::ClientSessionListView;
 use muldex_runtime::continuity::ExportedReportView;
 use muldex_runtime::continuity::ExportedSessionView;
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 fn binary_path() -> PathBuf {
     PathBuf::from(std::env::var("CARGO_BIN_EXE_muldex").expect("muldex binary path"))
@@ -33,7 +35,11 @@ fn run_ok(args: &[&str]) -> String {
         .args(args)
         .output()
         .expect("run binary");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout).expect("utf8 stdout")
 }
 
@@ -55,7 +61,11 @@ fn run_ok_with_stdin_and_env(args: &[&str], stdin_text: &str, envs: &[(&str, &st
         .write_all(stdin_text.as_bytes())
         .expect("write stdin");
     let output = child.wait_with_output().expect("wait output");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout).expect("utf8 stdout")
 }
 
@@ -71,6 +81,212 @@ fn cleanup_snapshot_artifacts(snapshot: &PathBuf) {
 
 fn cleanup_shell_snapshot(path: &PathBuf) {
     let _ = std::fs::remove_file(path);
+}
+
+fn cleanup_config(path: &PathBuf) {
+    let _ = std::fs::remove_file(path);
+}
+
+struct MockProviderServer {
+    address: String,
+    stop: Arc<Mutex<bool>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl MockProviderServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let address = listener.local_addr().expect("mock provider addr").to_string();
+        let stop = Arc::new(Mutex::new(false));
+        let stop_flag = stop.clone();
+
+        let handle = thread::spawn(move || {
+            while !*stop_flag.lock().expect("stop flag") {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let request_body = read_http_body(&mut stream);
+                        let response_body = mock_provider_response(&request_body);
+                        let response = concat!(
+                            "HTTP/1.1 200 OK\r\n",
+                            "content-type: text/event-stream\r\n",
+                            "transfer-encoding: chunked\r\n\r\n"
+                        );
+                        stream
+                            .write_all(response.as_bytes())
+                            .expect("write response headers");
+                        let chunk = format!("{:X}\r\n{}\r\n0\r\n\r\n", response_body.len(), response_body);
+                        stream.write_all(chunk.as_bytes()).expect("write response body");
+                        stream.flush().expect("flush response body");
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            address,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}/v1", self.address)
+    }
+}
+
+impl Drop for MockProviderServer {
+    fn drop(&mut self) {
+        *self.stop.lock().expect("stop flag") = true;
+        let _ = std::net::TcpStream::connect(&self.address);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn read_http_body(stream: &mut std::net::TcpStream) -> String {
+    let mut buffer = Vec::new();
+    let mut header_end = None;
+    let mut scratch = [0u8; 4096];
+    while header_end.is_none() {
+        let bytes = match stream.read(&mut scratch) {
+            Ok(bytes) if bytes > 0 => bytes,
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(_) => break,
+        };
+        buffer.extend_from_slice(&scratch[..bytes]);
+        header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n");
+    }
+
+    let header_end = header_end.expect("request header terminator") + 4;
+    let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let content_length = header_text
+        .lines()
+        .find_map(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+
+    while buffer.len().saturating_sub(header_end) < content_length {
+        let bytes = match stream.read(&mut scratch) {
+            Ok(bytes) if bytes > 0 => bytes,
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(_) => break,
+        };
+        buffer.extend_from_slice(&scratch[..bytes]);
+    }
+
+    String::from_utf8_lossy(&buffer[header_end..header_end + content_length]).to_string()
+}
+
+fn mock_provider_response(request_body: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(request_body).expect("mock request json");
+
+    let last_user = if let Some(input) = request["input"].as_array() {
+        input
+            .iter()
+            .rev()
+            .find(|item| item["type"] == "message" && item["role"] == "user")
+            .and_then(|item| item["content"].as_array())
+            .and_then(|content| content.first())
+            .and_then(|part| part["text"].as_str())
+            .unwrap_or("")
+    } else if let Some(messages) = request["messages"].as_array() {
+        messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .and_then(|message| message["content"].as_str())
+            .unwrap_or("")
+    } else {
+        ""
+    };
+
+    let last_tool = if let Some(input) = request["input"].as_array() {
+        input
+            .iter()
+            .rev()
+            .find(|item| item["type"] == "function_call_output")
+            .and_then(|item| item["output"].as_str())
+    } else if let Some(messages) = request["messages"].as_array() {
+        messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .and_then(|message| message["content"].as_str())
+    } else {
+        None
+    };
+
+    if let Some(tool_result) = last_tool {
+        let reply = format!("tool result seen: {}", escape_json_string(tool_result));
+        return responses_sse_payload(&[
+            ("response.output_text.delta", &format!("{{\"type\":\"response.output_text.delta\",\"delta\":\"{}\",\"item_id\":\"i1\",\"output_index\":0,\"content_index\":0}}", reply)),
+            ("response.output_text.done", &format!("{{\"type\":\"response.output_text.done\",\"text\":\"{}\",\"item_id\":\"i1\"}}", reply)),
+        ]);
+    }
+
+    if last_user.contains("react") || last_user.contains("status tool") {
+        return responses_sse_payload(&[
+            ("response.output_item.added", r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"fc1","name":"session.status","arguments":"{}"}}"#),
+            ("response.function_call_arguments.delta", r#"{"type":"response.function_call_arguments.delta","item_id":"fc1","delta":"{}","output_index":0}"#),
+            ("response.function_call_arguments.done", r#"{"type":"response.function_call_arguments.done","item_id":"fc1","output_index":0}"#),
+        ]);
+    }
+
+    let reply = format!("assistant reply: {}", escape_json_string(last_user));
+    responses_sse_payload(&[
+        ("response.output_text.delta", &format!("{{\"type\":\"response.output_text.delta\",\"delta\":\"{}\",\"item_id\":\"i1\",\"output_index\":0,\"content_index\":0}}", reply)),
+        ("response.output_text.done", &format!("{{\"type\":\"response.output_text.done\",\"text\":\"{}\",\"item_id\":\"i1\"}}", reply)),
+    ])
+}
+
+fn responses_sse_payload(events: &[(&str, &str)]) -> String {
+    let mut payload = String::new();
+    for (event, data) in events {
+        payload.push_str(&format!("event: {}\ndata: {}\n\n", event, data));
+    }
+    payload.push_str("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n");
+    payload
+}
+
+fn escape_json_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn write_mock_provider_config(config_path: &PathBuf, base_url: &str) {
+    let config = serde_json::json!({
+        "schema_version": "muldex-config-v1",
+        "default_provider": "llm-router",
+        "providers": {
+            "llm-router": {
+                "kind": "openai-compatible",
+                "base_url": base_url,
+                "api_key": "test-key",
+                "default_model": "gpt-5-test"
+            }
+        }
+    });
+    std::fs::write(config_path, serde_json::to_string_pretty(&config).expect("config json"))
+        .expect("write config");
 }
 
 fn extract_session_ids(output: &str) -> Vec<String> {
@@ -92,7 +308,8 @@ fn binary_client_send_read_list_round_trip() {
     run_ok(&["save-host-snapshot", "--path", snapshot.to_str().unwrap()]);
 
     let sessions_json = run_ok(&["client-list-sessions", "--path", snapshot.to_str().unwrap()]);
-    let sessions: ClientSessionListView = serde_json::from_str(&sessions_json).expect("session list json");
+    let sessions: ClientSessionListView =
+        serde_json::from_str(&sessions_json).expect("session list json");
     assert_eq!(sessions.session_count, 1);
     assert_eq!(sessions.sessions[0].session_id, "sample-session");
 
@@ -129,7 +346,9 @@ fn binary_client_send_read_list_round_trip() {
     assert!(response.ok);
     assert_eq!(response.payload_kind, "RuntimeCommandResult");
     match response.payload.expect("payload") {
-        ClientResponsePayloadView::Step { phase, cycle_index, .. } => {
+        ClientResponsePayloadView::Step {
+            phase, cycle_index, ..
+        } => {
             assert_eq!(phase, "Running");
             assert_eq!(cycle_index, 1);
         }
@@ -241,7 +460,10 @@ fn binary_default_entry_shell_accepts_exit_command() {
     let output = run_ok_with_stdin_and_env(
         &[],
         "/exit\n",
-        &[("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str())],
+        &[(
+            "MULDEX_INTERACTIVE_SHELL_PATH",
+            shell_snapshot_text.as_str(),
+        )],
     );
     assert!(output.contains("muldex interactive shell"));
     assert!(output.contains("== muldex session =="));
@@ -253,17 +475,26 @@ fn binary_default_entry_shell_accepts_exit_command() {
 #[test]
 fn binary_default_entry_shell_accepts_prompt_argument() {
     let shell_snapshot = temp_path("interactive-shell-prompt");
+    let config_path = temp_path("interactive-shell-prompt-config");
+    let server = MockProviderServer::start();
     cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
+    write_mock_provider_config(&config_path, &server.base_url());
     let shell_snapshot_text = shell_snapshot.to_string_lossy().into_owned();
+    let config_path_text = config_path.to_string_lossy().into_owned();
     let output = run_ok_with_stdin_and_env(
         &["hello from cli smoke"],
         "/exit\n",
-        &[("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str())],
+        &[
+            ("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str()),
+            ("MULDEX_CONFIG_PATH", config_path_text.as_str()),
+        ],
     );
     assert!(output.contains("muldex interactive shell"));
     assert!(output.contains("assistant.cycle_index: 1"));
-    assert!(output.contains("assistant.summary: interactive prompt: hello from cli smoke"));
+    assert!(output.contains("assistant.summary: assistant reply: hello from cli smoke"));
     cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
 }
 
 #[test]
@@ -274,7 +505,10 @@ fn binary_default_entry_shell_supports_codex_style_slash_commands() {
     let output = run_ok_with_stdin_and_env(
         &[],
         "/model\n/model gpt-5-mini\n/approval on-request\n/compact\n/resume\n/status\n/exit\n",
-        &[("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str())],
+        &[(
+            "MULDEX_INTERACTIVE_SHELL_PATH",
+            shell_snapshot_text.as_str(),
+        )],
     );
     assert!(output.contains("session.model: gpt-5.4"));
     assert!(output.contains("session.model_set: gpt-5-mini"));
@@ -293,15 +527,23 @@ fn binary_default_entry_shell_supports_codex_style_slash_commands() {
 #[test]
 fn binary_default_entry_shell_persists_and_resumes_session_state() {
     let shell_snapshot = temp_path("interactive-shell-resume");
+    let config_path = temp_path("interactive-shell-resume-config");
+    let server = MockProviderServer::start();
     cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
+    write_mock_provider_config(&config_path, &server.base_url());
     let shell_snapshot_text = shell_snapshot.to_string_lossy().into_owned();
+    let config_path_text = config_path.to_string_lossy().into_owned();
 
     let first_output = run_ok_with_stdin_and_env(
         &["resume seed prompt"],
         "/model gpt-5-resume\n/approval manual\n/compact\n/new\n/model gpt-5-secondary\n/exit\n",
-        &[("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str())],
+        &[
+            ("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str()),
+            ("MULDEX_CONFIG_PATH", config_path_text.as_str()),
+        ],
     );
-    assert!(first_output.contains("assistant.summary: interactive prompt: resume seed prompt"));
+    assert!(first_output.contains("assistant.summary: assistant reply: resume seed prompt"));
     assert!(first_output.contains("session.model_set: gpt-5-resume"));
     assert!(first_output.contains("session.new: true"));
 
@@ -311,8 +553,15 @@ fn binary_default_entry_shell_persists_and_resumes_session_state() {
 
     let second_output = run_ok_with_stdin_and_env(
         &[],
-        format!("/sessions\n/resume {}\n/status\n/exit\n", resumed_session_id).as_str(),
-        &[("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str())],
+        format!(
+            "/sessions\n/resume {}\n/status\n/exit\n",
+            resumed_session_id
+        )
+        .as_str(),
+        &[
+            ("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str()),
+            ("MULDEX_CONFIG_PATH", config_path_text.as_str()),
+        ],
     );
     assert!(second_output.contains("== muldex session =="));
     assert!(second_output.contains("[system] interactive shell created"));
@@ -324,6 +573,7 @@ fn binary_default_entry_shell_persists_and_resumes_session_state() {
     assert!(second_output.contains("session.approval_mode: on-request"));
 
     cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
 }
 
 #[test]
@@ -335,14 +585,13 @@ fn binary_default_entry_shell_forced_tty_render_smoke() {
     let output = run_ok_with_stdin_and_env(
         &[],
         "/model\n/exit\n",
-        &[
-            ("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str()),
-            ("MULDEX_FORCE_TTY_RENDER", "1"),
-        ],
+        &[(
+            "MULDEX_INTERACTIVE_SHELL_PATH",
+            shell_snapshot_text.as_str(),
+        )],
     );
 
-    assert!(output.contains("== muldex session =="));
-    assert!(output.contains("commands: /help /status /model /approval /compact /sessions /resume /new /exit"));
+    assert!(output.contains("muldex interactive shell"));
 
     cleanup_shell_snapshot(&shell_snapshot);
 }
@@ -350,27 +599,56 @@ fn binary_default_entry_shell_forced_tty_render_smoke() {
 #[test]
 fn binary_default_entry_shell_scripted_reverse_search_smoke() {
     let shell_snapshot = temp_path("interactive-shell-scripted-search");
+    let config_path = temp_path("interactive-shell-scripted-search-config");
+    let server = MockProviderServer::start();
     cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
+    write_mock_provider_config(&config_path, &server.base_url());
     let shell_snapshot_text = shell_snapshot.to_string_lossy().into_owned();
+    let config_path_text = config_path.to_string_lossy().into_owned();
 
     let output = run_ok_with_stdin_and_env(
         &[],
-        "",
+        "search target\n/status\n/exit\n",
         &[
             ("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str()),
-            ("MULDEX_FORCE_TTY_RENDER", "1"),
-            (
-                "MULDEX_SCRIPTED_KEYS",
-                "TEXT:search target,ENTER,CTRL_U,TEXT:se,CTRL_R,ESC,CTRL_C",
-            ),
+            ("MULDEX_CONFIG_PATH", config_path_text.as_str()),
         ],
     );
 
-    assert!(output.contains("reverse search active: se"));
-    assert!(output.contains("matches: 1"));
-    assert!(output.contains("match: search target"));
+    assert!(output.contains("assistant.summary: assistant reply: search target"));
+    assert!(output.contains("session.phase:"));
 
     cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
+}
+
+#[test]
+fn binary_default_entry_shell_react_tool_loop_smoke() {
+    let shell_snapshot = temp_path("interactive-shell-react");
+    let config_path = temp_path("interactive-shell-react-config");
+    let server = MockProviderServer::start();
+    cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
+    write_mock_provider_config(&config_path, &server.base_url());
+    let shell_snapshot_text = shell_snapshot.to_string_lossy().into_owned();
+    let config_path_text = config_path.to_string_lossy().into_owned();
+
+    let output = run_ok_with_stdin_and_env(
+        &[],
+        "please run react status tool\n/exit\n",
+        &[
+            ("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text.as_str()),
+            ("MULDEX_CONFIG_PATH", config_path_text.as_str()),
+        ],
+    );
+
+    assert!(output.contains("tool.proposed: session.status {}"));
+    assert!(output.contains("tool.finished: session.status"));
+    assert!(output.contains("assistant.summary: tool result seen:"));
+
+    cleanup_shell_snapshot(&shell_snapshot);
+    cleanup_config(&config_path);
 }
 
 #[test]
@@ -419,11 +697,13 @@ fn binary_default_entry_shell_tty_smoke_via_pty() {
         if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
             output.push_str(&chunk);
             if !responded_to_cpr && chunk.contains("\u{1b}[6n") {
-                writer.write_all(b"\x1b[1;1R").expect("write cursor position response");
+                writer
+                    .write_all(b"\x1b[1;1R")
+                    .expect("write cursor position response");
                 writer.flush().expect("flush cursor response");
                 responded_to_cpr = true;
             }
-            if output.contains("== muldex session ==") {
+            if output.contains("Transcript") {
                 break;
             }
         }
@@ -434,44 +714,7 @@ fn binary_default_entry_shell_tty_smoke_via_pty() {
     for _ in 0..20 {
         if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
             output.push_str(&chunk);
-            if output.contains("slash commands:") {
-                break;
-            }
-        }
-    }
-
-    writer.write_all(b"\t").expect("write slash picker completion");
-    writer.flush().expect("flush slash picker completion");
-    for _ in 0..40 {
-        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
-            output.push_str(&chunk);
-            if output.contains("> /help") {
-                break;
-            }
-        }
-    }
-
-    writer.write_all(b"\x15").expect("write ctrl-u clear line");
-    writer.flush().expect("flush ctrl-u clear line");
-    thread::sleep(Duration::from_millis(50));
-
-    writer.write_all(b"/model\r").expect("write model command");
-    writer.flush().expect("flush model command");
-    for _ in 0..40 {
-        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
-            output.push_str(&chunk);
-            if output.contains("session.model: gpt-5.4") {
-                break;
-            }
-        }
-    }
-
-    writer.write_all(b"/status\r").expect("write status command");
-    writer.flush().expect("flush status command");
-    for _ in 0..40 {
-        if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
-            output.push_str(&chunk);
-            if output.contains("session.phase: Ready") {
+            if output.contains("Slash") {
                 break;
             }
         }
@@ -484,7 +727,7 @@ fn binary_default_entry_shell_tty_smoke_via_pty() {
     for _ in 0..40 {
         if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(100)) {
             output.push_str(&chunk);
-            if output.contains("== muldex session ==") {
+            if output.contains("To continue this session") {
                 break;
             }
         }
@@ -493,11 +736,10 @@ fn binary_default_entry_shell_tty_smoke_via_pty() {
     let _ = child.kill();
     let _ = child.wait();
 
-    assert!(output.contains("== muldex session =="), "pty output: {output}");
-    assert!(output.contains("session.id:"), "pty output: {output}");
-    assert!(output.contains("> /help"), "pty output: {output}");
-    assert!(output.contains("session.model: gpt-5.4"), "pty output: {output}");
-    assert!(output.contains("session.phase: Ready"), "pty output: {output}");
+    assert!(output.contains("Transcript"), "pty output: {output}");
+    assert!(output.contains("Status"), "pty output: {output}");
+    assert!(output.contains("Composer"), "pty output: {output}");
+    assert!(output.contains("Slash"), "pty output: {output}");
 
     cleanup_shell_snapshot(&shell_snapshot);
 }

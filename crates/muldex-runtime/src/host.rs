@@ -61,8 +61,7 @@ impl RuntimeHost {
             return Err(RuntimeHostError::SessionAlreadyExists(session_id));
         }
 
-        self.sessions
-            .insert(session_id, RuntimeDriver::new(state));
+        self.sessions.insert(session_id, RuntimeDriver::new(state));
         Ok(())
     }
 
@@ -166,8 +165,8 @@ mod tests {
     use muldex_core::protocol::ContinueRequest;
     use muldex_core::protocol::ExecutionMode;
     use muldex_core::protocol::InterruptQueueState;
-    use muldex_core::protocol::PermissionContextSnapshot;
     use muldex_core::protocol::PendingApprovalState;
+    use muldex_core::protocol::PermissionContextSnapshot;
     use muldex_core::protocol::PostCompactionState;
     use muldex_core::protocol::ProgressSnapshot;
     use muldex_core::protocol::RecoverySnapshot;
@@ -302,7 +301,10 @@ mod tests {
             )
             .expect_err("missing session should fail");
 
-        assert_eq!(error, RuntimeHostError::SessionNotFound("missing".to_string()));
+        assert_eq!(
+            error,
+            RuntimeHostError::SessionNotFound("missing".to_string())
+        );
     }
 
     #[test]
@@ -386,8 +388,7 @@ mod tests {
 
         host.save_snapshot_to_path(&snapshot_path)
             .expect("save snapshot");
-        let restored = RuntimeHost::load_snapshot_from_path(&snapshot_path)
-            .expect("load snapshot");
+        let restored = RuntimeHost::load_snapshot_from_path(&snapshot_path).expect("load snapshot");
 
         let state = restored.get_state("session-1").expect("restored state");
         assert_eq!(state.request.thread_id, "thread-1");

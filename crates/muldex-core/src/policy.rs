@@ -9,9 +9,9 @@ use crate::protocol::InputModality;
 use crate::protocol::ModelCapabilityDescriptor;
 use crate::protocol::ModelSelectionDecision;
 use crate::protocol::ModelSelectionRequest;
+use crate::protocol::OutputModality;
 use crate::protocol::PlannerRequest;
 use crate::protocol::PlannerResponse;
-use crate::protocol::OutputModality;
 use crate::protocol::ReasoningMode;
 use crate::protocol::StructuredOutputMode;
 

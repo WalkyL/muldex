@@ -9,3 +9,10 @@ muldex-core = { path = "../muldex-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

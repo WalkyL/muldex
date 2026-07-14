@@ -1,9 +1,14 @@
-pub mod continuity;
-pub mod compression;
 pub mod client_policy;
 pub mod client_views;
+pub mod compression;
+pub mod continuity;
 pub mod daemon;
 pub mod daemon_local;
 pub mod daemon_transport;
 pub mod host;
+pub mod interactive_turn;
+pub mod openai_provider;
+pub mod react_loop;
+pub mod responses_provider;
+pub mod ui_events;
 pub mod runtime;

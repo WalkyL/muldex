@@ -163,7 +163,8 @@ impl FileCommandTransport {
             return Err(DaemonTransportError::NotFound(command_id.to_string()));
         }
         let target = self.archive_dir.join(format!("{}.json", command_id));
-        fs::rename(&source, &target).map_err(|error| DaemonTransportError::Io(error.to_string()))?;
+        fs::rename(&source, &target)
+            .map_err(|error| DaemonTransportError::Io(error.to_string()))?;
         Ok(target)
     }
 
@@ -375,7 +376,9 @@ mod tests {
     fn transport_reports_missing_response() {
         let root = root("muldex-daemon-transport-missing");
         let transport = FileCommandTransport::new(&root);
-        let error = transport.read_response("missing").expect_err("missing response");
+        let error = transport
+            .read_response("missing")
+            .expect_err("missing response");
 
         assert_eq!(error, DaemonTransportError::NotFound("missing".to_string()));
         let _ = fs::remove_dir_all(&root);
@@ -402,7 +405,8 @@ mod tests {
             request_checkpoint: false,
             enter_self_correction: false,
         });
-        let payload_json = serde_json::to_string_pretty(&runtime_command).expect("serialize command");
+        let payload_json =
+            serde_json::to_string_pretty(&runtime_command).expect("serialize command");
         let envelope = DaemonCommandEnvelope {
             schema_version: "daemon-envelope-v1".to_string(),
             command_id: "cmd-transport-1".to_string(),
@@ -414,7 +418,9 @@ mod tests {
         };
 
         transport.write_command(&envelope).expect("write command");
-        let responses = transport.process_commands(&mut host).expect("process command");
+        let responses = transport
+            .process_commands(&mut host)
+            .expect("process command");
 
         assert_eq!(responses.len(), 1);
         assert!(responses[0].ok);
@@ -428,9 +434,24 @@ mod tests {
             _ => panic!("expected step result"),
         }
 
-        assert!(!transport.commands_dir().join("cmd-transport-1.json").exists());
-        assert!(transport.archive_dir().join("cmd-transport-1.json").exists());
-        assert!(transport.responses_dir().join("cmd-transport-1.json").exists());
+        assert!(
+            !transport
+                .commands_dir()
+                .join("cmd-transport-1.json")
+                .exists()
+        );
+        assert!(
+            transport
+                .archive_dir()
+                .join("cmd-transport-1.json")
+                .exists()
+        );
+        assert!(
+            transport
+                .responses_dir()
+                .join("cmd-transport-1.json")
+                .exists()
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -452,19 +473,33 @@ mod tests {
         };
 
         transport.write_command(&envelope).expect("write command");
-        let responses = transport.process_commands(&mut host).expect("process command");
+        let responses = transport
+            .process_commands(&mut host)
+            .expect("process command");
 
         assert_eq!(responses.len(), 1);
         assert!(!responses[0].ok);
         assert_eq!(responses[0].payload_kind, "Error");
-        assert!(responses[0]
-            .error
-            .as_deref()
-            .expect("error")
-            .contains("unsupported daemon envelope schema_version"));
-        assert!(!transport.commands_dir().join("cmd-bad-schema.json").exists());
+        assert!(
+            responses[0]
+                .error
+                .as_deref()
+                .expect("error")
+                .contains("unsupported daemon envelope schema_version")
+        );
+        assert!(
+            !transport
+                .commands_dir()
+                .join("cmd-bad-schema.json")
+                .exists()
+        );
         assert!(transport.archive_dir().join("cmd-bad-schema.json").exists());
-        assert!(transport.responses_dir().join("cmd-bad-schema.json").exists());
+        assert!(
+            transport
+                .responses_dir()
+                .join("cmd-bad-schema.json")
+                .exists()
+        );
         assert_eq!(host.get_state("session-1").expect("state").cycle_index, 0);
 
         let _ = fs::remove_dir_all(&root);
@@ -487,28 +522,38 @@ mod tests {
         };
 
         transport.write_command(&envelope).expect("write command");
-        let responses = transport.process_commands(&mut host).expect("process command");
+        let responses = transport
+            .process_commands(&mut host)
+            .expect("process command");
 
         assert_eq!(responses.len(), 1);
         assert!(!responses[0].ok);
         assert_eq!(responses[0].payload_kind, "Error");
-        assert!(responses[0]
-            .error
-            .as_deref()
-            .expect("error")
-            .contains("unsupported daemon command payload_kind"));
-        assert!(!transport
-            .commands_dir()
-            .join("cmd-bad-payload-kind.json")
-            .exists());
-        assert!(transport
-            .archive_dir()
-            .join("cmd-bad-payload-kind.json")
-            .exists());
-        assert!(transport
-            .responses_dir()
-            .join("cmd-bad-payload-kind.json")
-            .exists());
+        assert!(
+            responses[0]
+                .error
+                .as_deref()
+                .expect("error")
+                .contains("unsupported daemon command payload_kind")
+        );
+        assert!(
+            !transport
+                .commands_dir()
+                .join("cmd-bad-payload-kind.json")
+                .exists()
+        );
+        assert!(
+            transport
+                .archive_dir()
+                .join("cmd-bad-payload-kind.json")
+                .exists()
+        );
+        assert!(
+            transport
+                .responses_dir()
+                .join("cmd-bad-payload-kind.json")
+                .exists()
+        );
         assert_eq!(host.get_state("session-1").expect("state").cycle_index, 0);
 
         let _ = fs::remove_dir_all(&root);

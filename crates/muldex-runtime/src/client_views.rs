@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::continuity::ExportedSessionView;
 use crate::client_policy::ClientAccessMode;
+use crate::continuity::ExportedSessionView;
 use crate::daemon::RuntimeDaemon;
 use crate::daemon_local::StaleOwnershipStatus;
 use crate::daemon_transport::DaemonResponseEnvelope;
@@ -172,7 +172,10 @@ pub fn daemon_status_view(
     daemon: &RuntimeDaemon,
     stale_status: Option<StaleOwnershipStatus>,
 ) -> ClientDaemonStatusView {
-    let session_count = daemon.host().map(|host| host.list_sessions().len()).unwrap_or(0);
+    let session_count = daemon
+        .host()
+        .map(|host| host.list_sessions().len())
+        .unwrap_or(0);
     let (stale_status_text, heartbeat_age_ms) = match stale_status {
         Some(StaleOwnershipStatus::NoLock) => (Some("no_lock".to_string()), None),
         Some(StaleOwnershipStatus::Fresh { heartbeat_age_ms }) => {
@@ -240,10 +243,12 @@ pub fn response_view(response: DaemonResponseEnvelope) -> ClientResponseView {
 
 pub fn project_runtime_command_result(payload_json: &str) -> ClientResponsePayloadView {
     match serde_json::from_str::<RuntimeCommandResult>(payload_json) {
-        Ok(RuntimeCommandResult::EventApplied { state }) => ClientResponsePayloadView::EventApplied {
-            phase: format!("{:?}", state.phase),
-            cycle_index: state.cycle_index,
-        },
+        Ok(RuntimeCommandResult::EventApplied { state }) => {
+            ClientResponsePayloadView::EventApplied {
+                phase: format!("{:?}", state.phase),
+                cycle_index: state.cycle_index,
+            }
+        }
         Ok(RuntimeCommandResult::Step(step)) => ClientResponsePayloadView::Step {
             phase: format!("{:?}", step.updated_state.phase),
             cycle_index: step.updated_state.cycle_index,
@@ -313,8 +318,8 @@ mod tests {
     use super::*;
     use crate::daemon::RuntimeDaemon;
     use crate::host::RuntimeHost;
-    use crate::runtime::RuntimeState;
     use crate::runtime::RuntimePhase;
+    use crate::runtime::RuntimeState;
     use muldex_core::protocol::ApprovalPolicyDescriptor;
     use muldex_core::protocol::ContextPressure;
     use muldex_core::protocol::ContinueReason;
@@ -412,7 +417,12 @@ mod tests {
         let path = std::env::temp_dir().join("muldex-client-view-daemon.json");
         let mut daemon = RuntimeDaemon::new(&path);
         daemon.boot_empty().expect("boot daemon");
-        let view = daemon_status_view(&daemon, Some(StaleOwnershipStatus::Fresh { heartbeat_age_ms: 5 }));
+        let view = daemon_status_view(
+            &daemon,
+            Some(StaleOwnershipStatus::Fresh {
+                heartbeat_age_ms: 5,
+            }),
+        );
         assert_eq!(view.contract.schema_version, "client-view-v1");
         assert_eq!(view.daemon_status, "Running");
         assert_eq!(view.stale_status.as_deref(), Some("fresh"));
@@ -725,7 +735,9 @@ mod tests {
         });
 
         match view.payload.expect("payload") {
-            ClientResponsePayloadView::Unknown { raw_json: view_json } => {
+            ClientResponsePayloadView::Unknown {
+                raw_json: view_json,
+            } => {
                 assert_eq!(view_json, raw_json);
             }
             _ => panic!("expected unknown payload view"),

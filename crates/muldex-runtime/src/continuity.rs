@@ -1,13 +1,11 @@
+use crate::compression::CompressedRunReportView;
+use crate::compression::compress_report_exact;
 use crate::host::RuntimeHost;
 use crate::host::RuntimeHostError;
 use crate::host::RuntimeHostSnapshot;
 use crate::host::RuntimeSessionSnapshot;
-use crate::compression::CompressedRunReportView;
-use crate::compression::compress_report_exact;
 use crate::runtime::RuntimePhase;
 use crate::runtime::RuntimeState;
-use serde::Deserialize;
-use serde::Serialize;
 use muldex_core::protocol::ContinueReason;
 use muldex_core::protocol::ContinueRequest;
 use muldex_core::upstream_adapter::CodexBootstrapSnapshot;
@@ -16,6 +14,8 @@ use muldex_core::upstream_adapter::CodexSignalSnapshot;
 use muldex_core::upstream_adapter::codex_bootstrap_snapshot_to_harness_request;
 use muldex_core::upstream_adapter::codex_live_snapshot_to_harness_request;
 use muldex_core::upstream_adapter::codex_snapshot_to_harness_request;
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Debug, Clone)]
 pub enum ExternalRuntimeSnapshot {
@@ -110,7 +110,9 @@ pub fn export_latest_report_compressed(
         .map(|report| compress_report_exact(report, previous)))
 }
 
-pub fn import_external_snapshot_as_runtime_state(snapshot: ExternalRuntimeSnapshot) -> RuntimeState {
+pub fn import_external_snapshot_as_runtime_state(
+    snapshot: ExternalRuntimeSnapshot,
+) -> RuntimeState {
     let request = match snapshot {
         ExternalRuntimeSnapshot::CodexSignal(snapshot) => {
             let harness = codex_snapshot_to_harness_request(snapshot);
@@ -192,12 +194,12 @@ mod tests {
     use muldex_core::protocol::InterruptQueueState;
     use muldex_core::protocol::PendingApprovalState;
     use muldex_core::protocol::PermissionContextSnapshot;
+    use muldex_core::protocol::PostCompactionState;
     use muldex_core::protocol::ProgressSnapshot;
     use muldex_core::protocol::RecoverySnapshot;
     use muldex_core::protocol::RuntimeModeState;
     use muldex_core::protocol::SandboxModeDescriptor;
     use muldex_core::protocol::SelfCorrectionState;
-    use muldex_core::protocol::PostCompactionState;
     use muldex_core::upstream_adapter::CodexBootstrapSnapshot;
 
     fn sample_host() -> RuntimeHost {
@@ -290,8 +292,8 @@ mod tests {
 
     #[test]
     fn continuity_can_import_bootstrap_snapshot_as_runtime_state() {
-        let state = import_external_snapshot_as_runtime_state(ExternalRuntimeSnapshot::CodexBootstrap(
-            CodexBootstrapSnapshot {
+        let state = import_external_snapshot_as_runtime_state(
+            ExternalRuntimeSnapshot::CodexBootstrap(CodexBootstrapSnapshot {
                 thread_id: "thread-42".to_string(),
                 turn_id: "turn-7".to_string(),
                 cwd: "/workspace".to_string(),
@@ -311,12 +313,15 @@ mod tests {
                 input_modalities: vec!["Text".to_string()],
                 tools_visible_count: 5,
                 prompt_preview_text_items: 1,
-            },
-        ));
+            }),
+        );
 
         assert_eq!(state.request.thread_id, "thread-42");
         assert_eq!(state.phase, RuntimePhase::Ready);
-        assert_eq!(state.request.runtime_mode.active_agent_mode.as_deref(), Some("build"));
+        assert_eq!(
+            state.request.runtime_mode.active_agent_mode.as_deref(),
+            Some("build")
+        );
     }
 
     #[test]
@@ -351,12 +356,14 @@ mod tests {
 
         assert_eq!(compressed.run_id, raw.run_id);
         assert!(compressed.compressed_cycle_summary.is_some());
-        assert!(compressed
-            .compressed_cycle_summary
-            .as_ref()
-            .expect("cycle summary")
-            .stub
-            .is_some());
+        assert!(
+            compressed
+                .compressed_cycle_summary
+                .as_ref()
+                .expect("cycle summary")
+                .stub
+                .is_some()
+        );
     }
 
     #[test]
@@ -399,12 +406,14 @@ mod tests {
         match view.report.expect("report view") {
             ExportedReportView::Compressed(report) => {
                 assert_eq!(report.run_id, previous.run_id);
-                assert!(report
-                    .compressed_cycle_summary
-                    .as_ref()
-                    .expect("cycle summary")
-                    .stub
-                    .is_some());
+                assert!(
+                    report
+                        .compressed_cycle_summary
+                        .as_ref()
+                        .expect("cycle summary")
+                        .stub
+                        .is_some()
+                );
             }
             _ => panic!("expected compressed report view"),
         }

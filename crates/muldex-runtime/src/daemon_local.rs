@@ -109,7 +109,8 @@ impl LocalDaemonOwnership {
         };
         let json = serde_json::to_string_pretty(&metadata)
             .map_err(|error| LocalDaemonError::Serialization(error.to_string()))?;
-        fs::write(&self.lock_path, json).map_err(|error| LocalDaemonError::Io(error.to_string()))?;
+        fs::write(&self.lock_path, json)
+            .map_err(|error| LocalDaemonError::Io(error.to_string()))?;
         self.held_lock = Some(metadata.clone());
         Ok(metadata)
     }
@@ -133,12 +134,16 @@ impl LocalDaemonOwnership {
             .map_err(|error| LocalDaemonError::Serialization(error.to_string()))
     }
 
-    pub fn refresh_heartbeat(&mut self, now_ms: u64) -> Result<DaemonLockMetadata, LocalDaemonError> {
+    pub fn refresh_heartbeat(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<DaemonLockMetadata, LocalDaemonError> {
         let mut metadata = self.read_lock()?;
         metadata.last_heartbeat_ms = now_ms;
         let json = serde_json::to_string_pretty(&metadata)
             .map_err(|error| LocalDaemonError::Serialization(error.to_string()))?;
-        fs::write(&self.lock_path, json).map_err(|error| LocalDaemonError::Io(error.to_string()))?;
+        fs::write(&self.lock_path, json)
+            .map_err(|error| LocalDaemonError::Io(error.to_string()))?;
         self.held_lock = Some(metadata.clone());
         Ok(metadata)
     }
@@ -169,9 +174,13 @@ impl LocalDaemonOwnership {
         let metadata = self.read_lock()?;
         let age = now_ms.saturating_sub(metadata.last_heartbeat_ms);
         if age > stale_threshold_ms {
-            Ok(StaleOwnershipStatus::Stale { heartbeat_age_ms: age })
+            Ok(StaleOwnershipStatus::Stale {
+                heartbeat_age_ms: age,
+            })
         } else {
-            Ok(StaleOwnershipStatus::Fresh { heartbeat_age_ms: age })
+            Ok(StaleOwnershipStatus::Fresh {
+                heartbeat_age_ms: age,
+            })
         }
     }
 
@@ -252,7 +261,9 @@ mod tests {
         let mut second = LocalDaemonOwnership::new(&root);
 
         first.acquire(1, 1).expect("first acquire");
-        let error = second.acquire(2, 2).expect_err("second acquire should fail");
+        let error = second
+            .acquire(2, 2)
+            .expect_err("second acquire should fail");
 
         assert!(matches!(error, LocalDaemonError::LockAlreadyExists(_)));
 
@@ -304,8 +315,18 @@ mod tests {
         let fresh = ownership.classify_stale(150, 100).expect("classify fresh");
         let stale = ownership.classify_stale(500, 100).expect("classify stale");
 
-        assert_eq!(fresh, StaleOwnershipStatus::Fresh { heartbeat_age_ms: 50 });
-        assert_eq!(stale, StaleOwnershipStatus::Stale { heartbeat_age_ms: 400 });
+        assert_eq!(
+            fresh,
+            StaleOwnershipStatus::Fresh {
+                heartbeat_age_ms: 50
+            }
+        );
+        assert_eq!(
+            stale,
+            StaleOwnershipStatus::Stale {
+                heartbeat_age_ms: 400
+            }
+        );
 
         ownership.release().expect("release lock");
         let _ = fs::remove_dir_all(&root);

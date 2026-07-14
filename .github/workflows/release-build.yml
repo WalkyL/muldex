@@ -66,11 +66,14 @@ jobs:
           cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
           cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
 
-      - name: Build Linux release binaries (PMA build container)
+      - name: Build Linux release binaries (podman cross build container on local host)
         shell: pwsh
         run: |
-          product-manager-agent build-container-run-once config/products.example.json muldex release-linux-x64 "cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu"
-          product-manager-agent build-container-run-once config/products.example.json muldex release-linux-arm64 "cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu"
+          $repo = $PWD.Path
+          $wslPath = (wsl -d podman-machine-default wslpath -a $repo).Trim()
+          $mount = "${wslPath}:/src:rw"
+          wsl -d podman-machine-default podman run --rm -v $mount -v muldex-cargo-registry:/usr/local/cargo/registry -w /src rustembedded/cross:x86_64-unknown-linux-gnu cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
+          wsl -d podman-machine-default podman run --rm -v $mount -v muldex-cargo-registry:/usr/local/cargo/registry -w /src rustembedded/cross:aarch64-unknown-linux-gnu cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
 
       - name: Package Windows artifacts
         shell: pwsh

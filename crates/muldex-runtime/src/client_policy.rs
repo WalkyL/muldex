@@ -20,7 +20,10 @@ mod tests {
 
     #[test]
     fn read_only_client_allows_status_only() {
-        assert!(client_command_allowed(&ClientAccessMode::ReadOnly, "status"));
+        assert!(client_command_allowed(
+            &ClientAccessMode::ReadOnly,
+            "status"
+        ));
         assert!(!client_command_allowed(
             &ClientAccessMode::ReadOnly,
             "advance-sample"
@@ -30,6 +33,9 @@ mod tests {
     #[test]
     fn full_client_allows_all_current_commands() {
         assert!(client_command_allowed(&ClientAccessMode::Full, "status"));
-        assert!(client_command_allowed(&ClientAccessMode::Full, "advance-sample"));
+        assert!(client_command_allowed(
+            &ClientAccessMode::Full,
+            "advance-sample"
+        ));
     }
 }

@@ -3,8 +3,8 @@ use serde::Serialize;
 
 use muldex_core::protocol::ContinueDecision;
 use muldex_core::protocol::ContinueMode;
-use muldex_core::protocol::ContinueRequest;
 use muldex_core::protocol::ContinueReason;
+use muldex_core::protocol::ContinueRequest;
 use muldex_core::protocol::CycleSummary;
 use muldex_core::protocol::InterruptInjectionMode;
 use muldex_core::protocol::PendingInterrupt;
@@ -170,16 +170,17 @@ impl RuntimeDriver {
                 decisions,
                 cycle_limit,
             } => RuntimeCommandResult::Drive(self.drive(decisions, cycle_limit)),
-            RuntimeCommand::DriveScript { script, cycle_limit } => {
-                RuntimeCommandResult::Script(self.drive_script(script, cycle_limit))
-            }
+            RuntimeCommand::DriveScript {
+                script,
+                cycle_limit,
+            } => RuntimeCommandResult::Script(self.drive_script(script, cycle_limit)),
             RuntimeCommand::ResumeAfterEvent {
                 event,
                 decisions,
                 cycle_limit,
-            } => RuntimeCommandResult::Resume(
-                self.resume_after_event(event, decisions, cycle_limit),
-            ),
+            } => {
+                RuntimeCommandResult::Resume(self.resume_after_event(event, decisions, cycle_limit))
+            }
         }
     }
 }
@@ -548,7 +549,14 @@ mod tests {
         );
 
         assert_eq!(result.consumed_interrupts.len(), 1);
-        assert!(result.updated_state.request.interrupts.pending_interrupts.is_empty());
+        assert!(
+            result
+                .updated_state
+                .request
+                .interrupts
+                .pending_interrupts
+                .is_empty()
+        );
         assert_eq!(result.report.outcome, RunOutcome::InProgress);
         assert_eq!(result.updated_state.phase, RuntimePhase::Running);
     }
@@ -578,8 +586,20 @@ mod tests {
         );
 
         assert_eq!(result.report.outcome, RunOutcome::WaitingForApproval);
-        assert!(result.updated_state.request.pending_approval.blocked_on_approval);
-        assert!(result.updated_state.request.pending_approval.may_continue_other_work);
+        assert!(
+            result
+                .updated_state
+                .request
+                .pending_approval
+                .blocked_on_approval
+        );
+        assert!(
+            result
+                .updated_state
+                .request
+                .pending_approval
+                .may_continue_other_work
+        );
         assert_eq!(result.updated_state.phase, RuntimePhase::WaitingForApproval);
     }
 
@@ -610,12 +630,14 @@ mod tests {
         );
 
         assert_eq!(result.report.outcome, RunOutcome::Checkpointed);
-        assert!(result
-            .report
-            .cycle_summary
-            .as_ref()
-            .expect("cycle summary")
-            .checkpoint_created);
+        assert!(
+            result
+                .report
+                .cycle_summary
+                .as_ref()
+                .expect("cycle summary")
+                .checkpoint_created
+        );
         assert_eq!(result.updated_state.cycle_index, 1);
         assert_eq!(result.updated_state.phase, RuntimePhase::Running);
     }
@@ -644,8 +666,8 @@ mod tests {
         let mut state = sample_state();
         state.phase = RuntimePhase::WaitingForApproval;
         state.request.pending_approval.blocked_on_approval = true;
-        state.request.pending_approval.active_request = Some(
-            muldex_core::protocol::PermissionRequest {
+        state.request.pending_approval.active_request =
+            Some(muldex_core::protocol::PermissionRequest {
                 request_id: "approval-1".to_string(),
                 action_kind: muldex_core::protocol::PermissionActionKind::RemoteMutation,
                 summary: "open a pull request".to_string(),
@@ -654,8 +676,7 @@ mod tests {
                 wait_for_decision: false,
                 requested_at_ms: Some(1),
                 expires_at_ms: None,
-            },
-        );
+            });
 
         let updated = ingest_runtime_event(
             state,
@@ -756,8 +777,8 @@ mod tests {
         );
 
         let mut waiting_state = waiting.final_state;
-        waiting_state.request.pending_approval.active_request = Some(
-            muldex_core::protocol::PermissionRequest {
+        waiting_state.request.pending_approval.active_request =
+            Some(muldex_core::protocol::PermissionRequest {
                 request_id: "approval-1".to_string(),
                 action_kind: muldex_core::protocol::PermissionActionKind::RemoteMutation,
                 summary: "open a pull request".to_string(),
@@ -766,8 +787,7 @@ mod tests {
                 wait_for_decision: false,
                 requested_at_ms: Some(1),
                 expires_at_ms: None,
-            },
-        );
+            });
 
         let resumed = resume_runtime_after_event(
             waiting_state,
@@ -798,9 +818,17 @@ mod tests {
 
         assert_eq!(resumed.resumed_state.phase, RuntimePhase::Ready);
         assert_eq!(resumed.drive_result.step_results.len(), 1);
-        assert_eq!(resumed.drive_result.final_state.phase, RuntimePhase::Running);
         assert_eq!(
-            resumed.drive_result.final_state.latest_report.as_ref().map(|r| &r.outcome),
+            resumed.drive_result.final_state.phase,
+            RuntimePhase::Running
+        );
+        assert_eq!(
+            resumed
+                .drive_result
+                .final_state
+                .latest_report
+                .as_ref()
+                .map(|r| &r.outcome),
             Some(&RunOutcome::InProgress)
         );
     }

@@ -113,7 +113,10 @@ mod tests {
 
         assert!(compressed.summary.is_none());
         assert!(compressed.stub.is_some());
-        assert_eq!(compressed.retention_class, RetentionClass::MayStubIfUnchanged);
+        assert_eq!(
+            compressed.retention_class,
+            RetentionClass::MayStubIfUnchanged
+        );
     }
 
     #[test]
@@ -137,11 +140,13 @@ mod tests {
 
         assert_eq!(compressed.run_id, "run-1");
         assert!(compressed.compressed_cycle_summary.is_some());
-        assert!(compressed
-            .compressed_cycle_summary
-            .as_ref()
-            .expect("cycle summary")
-            .stub
-            .is_some());
+        assert!(
+            compressed
+                .compressed_cycle_summary
+                .as_ref()
+                .expect("cycle summary")
+                .stub
+                .is_some()
+        );
     }
 }

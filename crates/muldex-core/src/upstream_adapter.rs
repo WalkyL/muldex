@@ -1,15 +1,15 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::protocol::ApprovalPolicyDescriptor;
 use crate::protocol::CapabilityRegistrySnapshot;
 use crate::protocol::CheckpointRef;
 use crate::protocol::CodexSessionContinuationSnapshot;
 use crate::protocol::ContextPressure;
+use crate::protocol::ContinueReason;
 use crate::protocol::ExecutionMode;
 use crate::protocol::InterruptQueueState;
-use crate::protocol::ApprovalPolicyDescriptor;
 use crate::protocol::PendingApprovalState;
-use crate::protocol::ContinueReason;
 use crate::protocol::PermissionContextSnapshot;
 use crate::protocol::PostCompactionState;
 use crate::protocol::ProgressSnapshot;
@@ -102,9 +102,7 @@ pub struct CodexLiveContinuationSnapshot {
     pub total_output_tokens: Option<i64>,
 }
 
-pub fn codex_snapshot_to_harness_request(
-    snapshot: CodexSignalSnapshot,
-) -> ReasoningHarnessRequest {
+pub fn codex_snapshot_to_harness_request(snapshot: CodexSignalSnapshot) -> ReasoningHarnessRequest {
     let checkpoint_id_for_ref = snapshot.last_compaction_checkpoint_id.clone();
 
     ReasoningHarnessRequest {
@@ -207,7 +205,9 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
         .iter()
         .map(|modality| modality.to_ascii_lowercase())
         .collect::<Vec<_>>();
-    let mentions_image = required_modalities.iter().any(|item| item.contains("image"));
+    let mentions_image = required_modalities
+        .iter()
+        .any(|item| item.contains("image"));
 
     ReasoningHarnessRequest {
         objective: format!(
@@ -223,9 +223,15 @@ pub fn codex_bootstrap_snapshot_to_harness_request(
             format!("model: {}", snapshot.model),
             format!("provider: {}", snapshot.model_provider),
             format!("collaboration_mode: {}", snapshot.collaboration_mode),
-            format!("reference_context_present: {}", snapshot.reference_context_present),
+            format!(
+                "reference_context_present: {}",
+                snapshot.reference_context_present
+            ),
             format!("approval_policy: {}", snapshot.approval_policy),
-            format!("show_raw_agent_reasoning: {}", snapshot.show_raw_agent_reasoning),
+            format!(
+                "show_raw_agent_reasoning: {}",
+                snapshot.show_raw_agent_reasoning
+            ),
         ],
         allowed_capability_classes: vec![
             "tool".to_string(),
@@ -411,7 +417,9 @@ pub fn codex_live_snapshot_to_harness_request(
         codex_continuation: None,
         context_pressure: ContextPressure {
             model_context_window: None,
-            active_context_tokens: snapshot.total_input_tokens.and_then(|v| u32::try_from(v).ok()),
+            active_context_tokens: snapshot
+                .total_input_tokens
+                .and_then(|v| u32::try_from(v).ok()),
             auto_compact_scope_tokens: None,
             auto_compact_limit: None,
             tokens_until_compaction: None,
@@ -524,15 +532,22 @@ mod tests {
         };
 
         let request = codex_bootstrap_snapshot_to_harness_request(snapshot);
-        assert_eq!(request.runtime_mode.active_agent_mode.as_deref(), Some("build"));
-        assert!(request
-            .constraints
-            .iter()
-            .any(|line| line.contains("image-capable model path")));
-        assert!(request
-            .evidence_scope
-            .iter()
-            .any(|line| line.contains("reference_context_present: true")));
+        assert_eq!(
+            request.runtime_mode.active_agent_mode.as_deref(),
+            Some("build")
+        );
+        assert!(
+            request
+                .constraints
+                .iter()
+                .any(|line| line.contains("image-capable model path"))
+        );
+        assert!(
+            request
+                .evidence_scope
+                .iter()
+                .any(|line| line.contains("reference_context_present: true"))
+        );
     }
 
     #[test]
@@ -551,9 +566,11 @@ mod tests {
         let request = codex_live_snapshot_to_harness_request(snapshot);
         assert_eq!(request.context_pressure.recent_compaction_count, 2);
         assert_eq!(request.progress.no_progress_iteration_count, 1);
-        assert!(request
-            .evidence_scope
-            .iter()
-            .any(|line| line.contains("continue_reason: PendingInput")));
+        assert!(
+            request
+                .evidence_scope
+                .iter()
+                .any(|line| line.contains("continue_reason: PendingInput"))
+        );
     }
 }

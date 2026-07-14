@@ -93,15 +93,10 @@ impl RuntimeDaemon {
         &self,
         stale_threshold_ms: u64,
     ) -> Result<StaleOwnershipReport, RuntimeDaemonError> {
-        Ok(self
-            .ownership
-            .stale_report(now_ms(), stale_threshold_ms)?)
+        Ok(self.ownership.stale_report(now_ms(), stale_threshold_ms)?)
     }
 
-    pub fn force_takeover(
-        &mut self,
-        stale_threshold_ms: u64,
-    ) -> Result<(), RuntimeDaemonError> {
+    pub fn force_takeover(&mut self, stale_threshold_ms: u64) -> Result<(), RuntimeDaemonError> {
         let _ = self
             .ownership
             .force_takeover(current_pid(), now_ms(), stale_threshold_ms)?;
@@ -165,7 +160,9 @@ impl RuntimeDaemon {
         Ok(&mut self.host)
     }
 
-    pub fn process_transport_once(&mut self) -> Result<Vec<DaemonResponseEnvelope>, RuntimeDaemonError> {
+    pub fn process_transport_once(
+        &mut self,
+    ) -> Result<Vec<DaemonResponseEnvelope>, RuntimeDaemonError> {
         if !matches!(self.status, RuntimeDaemonStatus::Running) {
             return Err(RuntimeDaemonError::NotRunning);
         }
@@ -229,8 +226,8 @@ mod tests {
     use crate::client_views::ClientResponsePayloadView;
     use crate::client_views::response_view;
     use crate::daemon_local::StaleOwnershipStatus;
-    use crate::runtime::RuntimeState;
     use crate::runtime::RuntimePhase;
+    use crate::runtime::RuntimeState;
     use muldex_core::protocol::ApprovalPolicyDescriptor;
     use muldex_core::protocol::ContextPressure;
     use muldex_core::protocol::ContinueReason;
@@ -436,7 +433,9 @@ mod tests {
             .transport()
             .write_command(&command)
             .expect("write command");
-        let responses = daemon.process_transport_once().expect("process transport once");
+        let responses = daemon
+            .process_transport_once()
+            .expect("process transport once");
 
         assert_eq!(responses.len(), 1);
         assert!(responses[0].ok);
@@ -493,7 +492,9 @@ mod tests {
             .expect("write command");
         assert!(command_path.exists());
 
-        let responses = daemon.process_transport_once().expect("process transport once");
+        let responses = daemon
+            .process_transport_once()
+            .expect("process transport once");
         assert_eq!(responses.len(), 1);
 
         let response = daemon
@@ -505,7 +506,9 @@ mod tests {
         assert!(view.ok);
         assert_eq!(view.contract.schema_version, "client-view-v1");
         match view.payload.expect("payload") {
-            ClientResponsePayloadView::Step { phase, cycle_index, .. } => {
+            ClientResponsePayloadView::Step {
+                phase, cycle_index, ..
+            } => {
                 assert_eq!(phase, "Running");
                 assert_eq!(cycle_index, 1);
             }
@@ -635,12 +638,19 @@ mod tests {
         let denied = daemon
             .force_takeover(u64::MAX)
             .expect_err("fresh owner should deny takeover");
-        assert!(matches!(denied, RuntimeDaemonError::Local(LocalDaemonError::TakeoverDenied)));
+        assert!(matches!(
+            denied,
+            RuntimeDaemonError::Local(LocalDaemonError::TakeoverDenied)
+        ));
 
         let lock = daemon.ownership().read_lock().expect("read lock");
         daemon
             .ownership
-            .force_takeover(current_pid(), lock.last_heartbeat_ms.saturating_add(1000), 100)
+            .force_takeover(
+                current_pid(),
+                lock.last_heartbeat_ms.saturating_add(1000),
+                100,
+            )
             .expect("stale takeover should succeed");
 
         daemon.shutdown().expect("shutdown daemon");
