@@ -7,11 +7,11 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::System::Console::{
-    CONSOLE_SCREEN_BUFFER_INFO, COORD, CONSOLE_TEXTMODE_BUFFER, CreateConsoleScreenBuffer,
+    CONSOLE_SCREEN_BUFFER_INFO, CONSOLE_TEXTMODE_BUFFER, CreateConsoleScreenBuffer,
     ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT,
-    ENABLE_WINDOW_INPUT, GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle,
-    SetConsoleActiveScreenBuffer, SetConsoleMode, SetConsoleScreenBufferSize, STD_INPUT_HANDLE,
-    STD_OUTPUT_HANDLE,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, ENABLE_WINDOW_INPUT, GetConsoleMode,
+    GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleActiveScreenBuffer, SetConsoleMode,
+    SetConsoleScreenBufferSize, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 
 use crate::interactive_tui::wincon_backend::WinConBackend;
@@ -190,6 +190,12 @@ impl TerminalLifecycle for Win32Lifecycle {
             }
             return Err(io::Error::last_os_error());
         }
+        // Enable virtual-terminal processing on the output buffer so crossterm
+        // emits portable VT escape sequences (clear/draw) instead of falling
+        // back to Win32 console APIs, which fail under a ConPTY (e.g. the CI
+        // smoke test and Windows Terminal). GAP-01.
+        enable_vt_output(default_screen);
+        enable_vt_output(handle);
         self.alternate_screen = Some(handle);
         Ok(())
     }
@@ -202,6 +208,21 @@ impl TerminalLifecycle for Win32Lifecycle {
             }
         }
         Ok(())
+    }
+}
+
+/// Enable virtual-terminal processing on a console output handle if it is a
+/// real console screen buffer (no-op on a pipe/ConPTY output that already
+/// speaks VT). This keeps crossterm on the portable VT escape path.
+fn enable_vt_output(handle: HANDLE) {
+    if handle == 0 || handle == INVALID_HANDLE_VALUE {
+        return;
+    }
+    let mut mode = 0u32;
+    if unsafe { GetConsoleMode(handle, &mut mode) } != 0 {
+        unsafe {
+            let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+        }
     }
 }
 

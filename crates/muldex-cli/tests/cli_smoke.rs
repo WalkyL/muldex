@@ -670,6 +670,7 @@ fn binary_default_entry_shell_tty_smoke_via_pty() {
 
     let mut cmd = CommandBuilder::new(binary_path());
     cmd.env("MULDEX_INTERACTIVE_SHELL_PATH", shell_snapshot_text);
+    cmd.env("RUST_BACKTRACE", "full");
     let mut child = slave.spawn_command(cmd).expect("spawn command");
     drop(slave);
 

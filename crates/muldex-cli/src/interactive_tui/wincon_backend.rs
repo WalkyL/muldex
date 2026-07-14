@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::io::{self, Write};
+use std::io;
 
 use ratatui::backend::{Backend, WindowSize};
 use ratatui::buffer::Cell as BufferCell;
@@ -9,7 +9,7 @@ use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{
     CONSOLE_CURSOR_INFO, CONSOLE_FONT_INFOEX, CONSOLE_SCREEN_BUFFER_INFO, COORD,
     GetConsoleCursorInfo, GetConsoleScreenBufferInfo, GetCurrentConsoleFontEx, GetStdHandle,
-    SetConsoleCursorInfo, SetConsoleCursorPosition, STD_OUTPUT_HANDLE,
+    SetConsoleCursorInfo, SetConsoleCursorPosition, WriteConsoleW, STD_OUTPUT_HANDLE,
 };
 
 use crossterm::cursor::SetCursorStyle;
@@ -94,10 +94,7 @@ impl WinConBackend {
     /// lifecycle layer, and it is the portable equivalent of a full
     /// `ScrollConsoleScreenBufferW` purge.
     pub(crate) fn clear_scrollback(&self) -> io::Result<()> {
-        let mut out = io::stdout();
-        out.write_all(b"\x1b[3J\x1b[2J\x1b[H")?;
-        out.flush()?;
-        Ok(())
+        write_console_out(        self.handle.get(), b"\x1b[3J\x1b[2J\x1b[H")
     }
 }
 
@@ -106,7 +103,33 @@ impl Backend for WinConBackend {
     where
         I: Iterator<Item = (u16, u16, &'a BufferCell)>,
     {
-        self.inner.draw(content)
+        use std::fmt::Write;
+        let h = self.handle.get();
+        let mut buf = String::with_capacity(256);
+        let mut cursor: Option<(u16, u16)> = None;
+        for (x, y, cell) in content {
+            let need_move = match cursor {
+                Some((cx, cy)) => y != cy || (x != cx && x != cx.wrapping_add(1)),
+                None => true,
+            };
+            if need_move {
+                write!(buf, "\x1b[{};{}H", y + 1, x + 1).unwrap();
+                cursor = Some((x, y));
+            }
+            let sym = cell.symbol();
+            buf.push_str(sym);
+            if let Some((cx, _)) = cursor {
+                cursor = Some((cx.wrapping_add(1), y));
+            }
+            if buf.len() > 200 {
+                write_console_out(h, buf.as_bytes())?;
+                buf.clear();
+            }
+        }
+        if buf.len() > 0 {
+            write_console_out(h, buf.as_bytes())?;
+        }
+        Ok(())
     }
 
     fn hide_cursor(&mut self) -> io::Result<()> {
@@ -131,7 +154,11 @@ impl Backend for WinConBackend {
     }
 
     fn clear(&mut self) -> io::Result<()> {
-        self.inner.clear()
+        // Write to the alternate screen buffer handle (not io::stdout())
+        // because after SetConsoleActiveScreenBuffer the standard output
+        // handle still refers to the primary buffer, whose contents are not
+        // forwarded to the ConPTY master.
+        write_console_out(self.handle.get(), b"\x1b[2J\x1b[H")
     }
 
     fn size(&self) -> io::Result<Size> {
@@ -196,6 +223,31 @@ fn cell_size_pixels(handle: HANDLE) -> Option<(u16, u16)> {
         return None;
     }
     Some((info.dwFontSize.X.max(0) as u16, info.dwFontSize.Y.max(0) as u16))
+}
+
+/// Write a UTF-8 byte slice to a console handle via WriteConsoleW.  All bytes
+/// are ASCII (ANSI escape sequences + 7-bit terminal text) so zero-extension
+/// to UTF-16 is valid.  This writes to the *alternate screen buffer* handle
+/// (not io::stdout()) because after SetConsoleActiveScreenBuffer the standard
+/// output handle still refers to the primary buffer, whose contents are not
+/// forwarded to the ConPTY master.
+fn write_console_out(handle: HANDLE, data: &[u8]) -> io::Result<()> {
+    let wide: Vec<u16> = data.iter().map(|&b| b as u16).collect();
+    let mut written = 0u32;
+    let ok = unsafe {
+        WriteConsoleW(
+            handle,
+            wide.as_ptr() as *const _,
+            wide.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
