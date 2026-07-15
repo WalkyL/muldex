@@ -1,8 +1,8 @@
-$ErrorActionPreference = 'Stop'
-
 param(
     [string]$InstallDir = "$env:USERPROFILE\.muldex\bin"
 )
+
+$ErrorActionPreference = 'Stop'
 
 $targetBinary = Join-Path $InstallDir 'muldex.exe'
 if (Test-Path -LiteralPath $targetBinary) {

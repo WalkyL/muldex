@@ -72,11 +72,21 @@ jobs:
       - name: Build Linux release binaries (podman cross build container on local host)
         shell: pwsh
         run: |
-          $repo = $PWD.Path
-          $wslPath = (wsl -d podman-machine-default wslpath -a $repo).Trim()
+          $repo = (Resolve-Path -LiteralPath $PWD).Path
+          # wsl.exe strips backslashes from unquoted Windows paths before wslpath sees them.
+          $wslInput = $repo.Replace('\', '/')
+          $wslOutput = @(wsl.exe -d podman-machine-default -- wslpath -a -- "$wslInput")
+          $wslExitCode = $LASTEXITCODE
+          $wslPath = ($wslOutput -join "`n").Trim()
+          if ($wslExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($wslPath)) {
+            throw "Unable to convert repository path for Podman WSL mount: $repo"
+          }
           $mount = "${wslPath}:/src:rw"
-          wsl -d podman-machine-default podman run --rm -v $mount -v muldex-cargo-registry:/usr/local/cargo/registry -w /src rustembedded/cross:x86_64-unknown-linux-gnu cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
-          wsl -d podman-machine-default podman run --rm -v $mount -v muldex-cargo-registry:/usr/local/cargo/registry -w /src rustembedded/cross:aarch64-unknown-linux-gnu cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
+          Write-Host "Mounting repository into Podman at $mount"
+          wsl.exe -d podman-machine-default -- podman run --rm -v $mount -v muldex-cargo-registry:/usr/local/cargo/registry -w /src rustembedded/cross:x86_64-unknown-linux-gnu cargo build -p muldex-cli --release --target x86_64-unknown-linux-gnu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wsl.exe -d podman-machine-default -- podman run --rm -v $mount -v muldex-cargo-registry:/usr/local/cargo/registry -w /src rustembedded/cross:aarch64-unknown-linux-gnu cargo build -p muldex-cli --release --target aarch64-unknown-linux-gnu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows artifacts
         shell: pwsh

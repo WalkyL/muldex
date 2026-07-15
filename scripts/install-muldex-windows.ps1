@@ -1,5 +1,3 @@
-$ErrorActionPreference = 'Stop'
-
 param(
     [string]$BinaryPath,
     [string]$InstallDir,
@@ -7,6 +5,8 @@ param(
     [switch]$UseLlmRouter,
     [switch]$SkipLlmRouterPrompt
 )
+
+$ErrorActionPreference = 'Stop'
 
 if (-not $BinaryPath) {
     $BinaryPath = '.\target\debug\muldex.exe'

@@ -1,11 +1,11 @@
-$ErrorActionPreference = 'Stop'
-
 param(
     [Parameter(Mandatory = $true)]
     [string]$ArtifactPath,
     [Parameter(Mandatory = $true)]
     [string]$PlatformKind
 )
+
+$ErrorActionPreference = 'Stop'
 
 if (-not (Test-Path -LiteralPath $ArtifactPath)) {
     throw "artifact not found: $ArtifactPath"

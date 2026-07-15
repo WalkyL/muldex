@@ -1,11 +1,11 @@
-$ErrorActionPreference = 'Stop'
-
 param(
     [Parameter(Mandatory = $true)]
     [string]$Target,
     [Parameter(Mandatory = $true)]
     [string]$ArtifactName
 )
+
+$ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $binaryPath = Join-Path $repoRoot "target\$Target\release\muldex.exe"
