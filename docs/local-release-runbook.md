@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Describe the intended operator flow for running `muldex` release builds when GitHub Actions orchestrates the pipeline but Windows and Linux compilation are executed on the self-hosted build host at `192.168.1.52`.
+Describe the intended operator flow for running `muldex` release builds when GitHub Actions orchestrates the pipeline, Windows x64 and Linux compilation run on the self-hosted build host at `192.168.1.52`, and Windows ARM64 compilation runs on a hosted Windows image.
 
 This is a practical runbook, not a policy manifesto.
 
@@ -17,9 +17,13 @@ This is a practical runbook, not a policy manifesto.
 
 ### Self-hosted build host
 
-- Windows build jobs
-- Linux build jobs
+- Windows x64 and Linux build jobs
 - package generation for those targets
+
+### GitHub-hosted Windows ARM64 job
+
+- Windows ARM64 build job
+- package generation for the ARM64 target
 
 Current intended self-hosted build host:
 
@@ -34,7 +38,6 @@ Expected labels in the workflow path:
 plus one platform label such as:
 
 - `windows-x64`
-- `windows-arm64`
 - `linux-x64`
 - `linux-arm64`
 
@@ -91,6 +94,14 @@ Expect:
 - jobs land on the self-hosted runner set that maps to `192.168.1.52`
 - package scripts run
 - artifact verification passes
+
+### Windows ARM64 job
+
+Expect:
+
+- the job runs on the GitHub-hosted `windows-2025` runner
+- the ARM64 MSVC toolchain preflight passes
+- the ARM64 package and artifact verification pass
 
 ### macOS jobs
 

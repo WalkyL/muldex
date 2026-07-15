@@ -7,7 +7,8 @@ Define the intended release build topology for `muldex-cli` across supported ope
 This document reflects the current planned release shape:
 
 - GitHub release or tag triggers orchestration
-- Windows and Linux artifacts are built through self-hosted or locally controlled build images
+- Windows x64 and Linux artifacts are built through self-hosted or locally controlled build images
+- Windows ARM64 is built on a GitHub-hosted Windows image with the ARM64 MSVC toolchain
 - macOS artifacts are built on GitHub-hosted macOS runners
 
 ## Supported target matrix
@@ -25,19 +26,20 @@ Current intended target matrix:
 
 ### Windows and Linux
 
-Windows and Linux release builds are intended to run on self-hosted infrastructure that uses the maintained local build images.
+Windows x64 and Linux release builds are intended to run on self-hosted infrastructure that uses the maintained local build images.
 
 Current intended build host:
 
 - `192.168.1.52`
 
-GitHub Actions should orchestrate release builds, but Windows and Linux compilation should resolve onto the build image or runner hosted on that machine rather than drift onto arbitrary public runners.
+GitHub Actions should orchestrate release builds, but Windows x64 and Linux compilation should resolve onto the build image or runner hosted on that machine rather than drift onto arbitrary public runners.
 
 Important current interpretation:
 
 - `.52` is a Windows self-hosted runner host
 - the Podman image on `.52` is the Linux build environment, not a separately registered Linux GitHub runner
-- Windows and Linux release jobs should therefore route to the same `.52` Windows runner and let the local build image determine the target build environment
+- Windows x64 and Linux release jobs should therefore route to the same `.52` Windows runner and let the local build image determine the target build environment
+- Windows ARM64 is the explicit exception because the `.52` image does not include the ARM64 MSVC libraries
 
 Why:
 
@@ -47,8 +49,9 @@ Why:
 
 Current runner expectation:
 
-- Windows x64 and arm64 through the self-hosted Windows runner on `.52`
+- Windows x64 through the self-hosted Windows runner on `.52`
 - Linux x64 and arm64 through the same `.52` Windows runner, using the local Podman build image as the Linux build environment
+- Windows arm64 through the GitHub-hosted `windows-2025` runner, which includes the ARM64 MSVC libraries missing from `.52`
 
 Operational expectation:
 

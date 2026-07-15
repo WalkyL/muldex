@@ -57,7 +57,6 @@ jobs:
           rustc --version
           cargo --version
           rustup target add x86_64-pc-windows-msvc
-          rustup target add aarch64-pc-windows-msvc
 
       - name: Build Windows release binaries (host-direct per PMA hybrid model)
         shell: pwsh
@@ -67,12 +66,7 @@ jobs:
             throw "Visual Studio environment script not found: $vcvarsall"
           }
 
-          # Load the matching MSVC/Windows SDK environment for each target.
-          # The ARM64 build otherwise inherits the x64 SDK LIB path and fails
-          # with LNK1181 when link.exe cannot find bcrypt.lib.
           cmd /d /s /c "call `"$vcvarsall`" amd64 && cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmd /d /s /c "call `"$vcvarsall`" amd64_arm64 && cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Linux release binaries (podman cross build container on local host)
@@ -88,13 +82,11 @@ jobs:
         shell: pwsh
         run: |
           powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target x86_64-pc-windows-msvc -ArtifactName muldex-x86_64-pc-windows-msvc
-          powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target aarch64-pc-windows-msvc -ArtifactName muldex-aarch64-pc-windows-msvc
 
       - name: Verify Windows artifacts
         shell: pwsh
         run: |
           & .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\muldex-x86_64-pc-windows-msvc.zip -PlatformKind windows
-          & .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\muldex-aarch64-pc-windows-msvc.zip -PlatformKind windows
 
       - name: Package Linux artifacts
         shell: bash
@@ -114,9 +106,62 @@ jobs:
           name: muldex-self-hosted-release-assets
           path: |
             target/release-package/muldex-x86_64-pc-windows-msvc.zip
-            target/release-package/muldex-aarch64-pc-windows-msvc.zip
             target/release-package/muldex-x86_64-unknown-linux-gnu.tar.gz
             target/release-package/muldex-aarch64-unknown-linux-gnu.tar.gz
+
+  build-windows-arm64-github-hosted:
+    needs: validate
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Verify ARM64 MSVC toolchain
+        shell: pwsh
+        run: |
+          $vswhere = (Get-Command vswhere.exe -ErrorAction SilentlyContinue).Source
+          if (-not $vswhere) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          }
+          if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe not found: $vswhere"
+          }
+
+          $installPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath).Trim()
+          if (-not $installPath) {
+            throw 'Visual Studio ARM64 C++ build tools are not installed'
+          }
+
+          $arm64Lib = Get-ChildItem -LiteralPath (Join-Path $installPath 'VC\Tools\MSVC') -Filter msvcrt.lib -File -Recurse |
+            Where-Object { $_.FullName -match '\\lib\\arm64\\msvcrt\.lib$' } |
+            Select-Object -First 1
+          if (-not $arm64Lib) {
+            throw "ARM64 MSVC runtime import library is missing under $installPath"
+          }
+          Write-Host "Using ARM64 MSVC library: $($arm64Lib.FullName)"
+
+      - name: Build Windows ARM64 release binary
+        shell: pwsh
+        run: cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
+
+      - name: Package Windows ARM64 release artifact
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\package-release-windows.ps1 -Target aarch64-pc-windows-msvc -ArtifactName muldex-aarch64-pc-windows-msvc
+
+      - name: Verify Windows ARM64 packaged artifact
+        shell: pwsh
+        run: .\scripts\verify-release-artifact.ps1 -ArtifactPath .\target\release-package\muldex-aarch64-pc-windows-msvc.zip -PlatformKind windows
+
+      - name: Upload Windows ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: muldex-aarch64-pc-windows-msvc
+          path: target/release-package/muldex-aarch64-pc-windows-msvc.zip
 
   build-macos-github-hosted:
     needs: validate
@@ -160,6 +205,7 @@ jobs:
     if: (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'dryrun')) || (github.event_name == 'workflow_dispatch' && inputs.publish_release != 'false')
     needs:
       - build-windows-linux-self-hosted
+      - build-windows-arm64-github-hosted
       - build-macos-github-hosted
     runs-on: ubuntu-latest
     permissions:

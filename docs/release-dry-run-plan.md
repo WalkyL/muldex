@@ -13,11 +13,12 @@ Confirm that all of the following are true in one coordinated run:
 
 1. GitHub Actions starts from the intended trigger
 2. validation jobs pass
-3. Windows and Linux jobs route onto the intended self-hosted infrastructure at `192.168.1.52`
-4. macOS jobs run on GitHub-hosted macOS runners
-5. packaged artifacts are produced for each target
-6. artifact verification succeeds for each target
-7. packaged artifacts are attached to the GitHub Release for a `v*` tag build
+3. Windows x64 and Linux jobs route onto the intended self-hosted infrastructure at `192.168.1.52`
+4. Windows ARM64 runs on the GitHub-hosted `windows-2025` runner
+5. macOS jobs run on GitHub-hosted macOS runners
+6. packaged artifacts are produced for each target
+7. artifact verification succeeds for each target
+8. packaged artifacts are attached to the GitHub Release for a `v*` tag build
 
 ## Suggested trigger mode
 
@@ -51,7 +52,6 @@ On the Windows/Linux build host at `192.168.1.52`, confirm:
   - `build-host-192-168-1-52`
   - one of:
     - `windows-x64`
-    - `windows-arm64`
     - `linux-x64`
     - `linux-arm64`
 - the local build image and toolchain are ready
@@ -102,7 +102,8 @@ If this fails:
 
 Expected:
 
-- Windows/Linux jobs clearly report self-hosted labels that map to `192.168.1.52`
+- Windows x64/Linux jobs clearly report self-hosted labels that map to `192.168.1.52`
+- Windows ARM64 clearly reports the GitHub-hosted `windows-2025` runner
 - macOS jobs clearly report GitHub-hosted macOS runners
 
 Failure to route correctly means the dry run is invalid even if builds appear to pass.
