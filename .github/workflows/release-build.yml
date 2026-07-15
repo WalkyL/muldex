@@ -246,4 +246,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${RELEASE_TAG}" release-artifacts/**/* --clobber
+          mapfile -d '' artifacts < <(find release-artifacts -type f -print0)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo 'No packaged release artifacts were downloaded' >&2
+            exit 1
+          fi
+          gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" "${artifacts[@]}" --clobber
