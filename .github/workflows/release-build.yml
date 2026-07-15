@@ -224,7 +224,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: target/release-package/${{ matrix.artifact_name }}*
+          path: target/release-package/${{ matrix.artifact_name }}.tar.gz
 
   publish-release:
     if: (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'dryrun')) || (github.event_name == 'workflow_dispatch' && inputs.publish_release != 'false')
@@ -246,9 +246,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -d '' artifacts < <(find release-artifacts -type f -print0)
-          if [ "${#artifacts[@]}" -eq 0 ]; then
-            echo 'No packaged release artifacts were downloaded' >&2
+          mapfile -d '' artifacts < <(find release-artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0)
+          if [ "${#artifacts[@]}" -ne 6 ]; then
+            echo "Expected 6 archive artifacts, found ${#artifacts[@]}" >&2
+            printf 'Downloaded files:\n'
+            find release-artifacts -type f -print >&2
             exit 1
           fi
           gh release upload "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" "${artifacts[@]}" --clobber
