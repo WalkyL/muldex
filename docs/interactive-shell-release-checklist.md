@@ -78,7 +78,7 @@ Release-infrastructure checks for broader trial preparation:
 - [x] install and uninstall paths are defined per platform
 - [ ] installer asks whether to install and use `llm-router`
 - [ ] installer explains the OpenAI-compatible request shape and why `llm-router` is recommended as a compatibility layer
-- [ ] GitHub Actions routing to the `192.168.1.52` Windows/Linux build host is verified in a real release run
+- [ ] GitHub Actions routing to the `192.168.1.52` Windows x64 build host and hosted Linux jobs is verified in a real release run
 
 Current level assessment:
 

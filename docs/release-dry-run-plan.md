@@ -13,12 +13,13 @@ Confirm that all of the following are true in one coordinated run:
 
 1. GitHub Actions starts from the intended trigger
 2. validation jobs pass
-3. Windows x64 and Linux jobs route onto the intended self-hosted infrastructure at `192.168.1.52`
-4. Windows ARM64 runs on the GitHub-hosted `windows-2025` runner
-5. macOS jobs run on GitHub-hosted macOS runners
-6. packaged artifacts are produced for each target
-7. artifact verification succeeds for each target
-8. packaged artifacts are attached to the GitHub Release for a `v*` tag build
+3. Windows x64 routes onto the intended self-hosted infrastructure at `192.168.1.52`
+4. Linux x64 and arm64 build on the declared GitHub-hosted Ubuntu runners
+5. Windows ARM64 runs on the GitHub-hosted `windows-2025` runner
+6. macOS jobs run on GitHub-hosted macOS runners
+7. packaged artifacts are produced for each target
+8. artifact verification succeeds for each target
+9. packaged artifacts are attached to the GitHub Release for a `v*` tag build
 
 ## Suggested trigger mode
 
@@ -43,18 +44,15 @@ Before starting the dry run, confirm:
 
 ### Self-hosted runner state
 
-On the Windows/Linux build host at `192.168.1.52`, confirm:
+On the Windows build host at `192.168.1.52`, confirm:
 
 - the self-hosted runner is online
 - the runner carries the expected labels
   - `self-hosted`
   - `muldex`
   - `build-host-192-168-1-52`
-  - one of:
-    - `windows-x64`
-    - `linux-x64`
-    - `linux-arm64`
-- the local build image and toolchain are ready
+  - `windows-x64`
+  - the local Windows toolchain is ready
 
 ### GitHub-side permissions
 
@@ -102,7 +100,8 @@ If this fails:
 
 Expected:
 
-- Windows x64/Linux jobs clearly report self-hosted labels that map to `192.168.1.52`
+- Windows x64 clearly reports self-hosted labels that map to `192.168.1.52`
+- Linux jobs clearly report the declared GitHub-hosted Ubuntu runner
 - Windows ARM64 clearly reports the GitHub-hosted `windows-2025` runner
 - macOS jobs clearly report GitHub-hosted macOS runners
 

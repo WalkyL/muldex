@@ -7,7 +7,8 @@ Define the intended release build topology for `muldex-cli` across supported ope
 This document reflects the current planned release shape:
 
 - GitHub release or tag triggers orchestration
-- Windows x64 and Linux artifacts are built through self-hosted or locally controlled build images
+- Windows x64 artifacts are built on the self-hosted Windows runner at `192.168.1.52`
+- Linux artifacts are built on GitHub-hosted Ubuntu runners with explicit GNU toolchains
 - Windows ARM64 is built on a GitHub-hosted Windows image with the ARM64 MSVC toolchain
 - macOS artifacts are built on GitHub-hosted macOS runners
 
@@ -24,39 +25,42 @@ Current intended target matrix:
 
 ## Runner allocation
 
-### Windows and Linux
+### Windows
 
-Windows x64 and Linux release builds are intended to run on self-hosted infrastructure that uses the maintained local build images.
+Windows x64 release builds run on self-hosted infrastructure that uses the maintained local Visual Studio installation.
 
 Current intended build host:
 
 - `192.168.1.52`
 
-GitHub Actions should orchestrate release builds, but Windows x64 and Linux compilation should resolve onto the build image or runner hosted on that machine rather than drift onto arbitrary public runners.
+GitHub Actions should orchestrate the release build, while Windows x64 compilation remains anchored to the known `.52` runner.
 
 Important current interpretation:
 
 - `.52` is a Windows self-hosted runner host
-- the Podman image on `.52` is the Linux build environment, not a separately registered Linux GitHub runner
-- Windows x64 and Linux release jobs should therefore route to the same `.52` Windows runner and let the local build image determine the target build environment
-- Windows ARM64 is the explicit exception because the `.52` image does not include the ARM64 MSVC libraries
+- Linux is intentionally built on hosted Ubuntu runners because the `.52` runner cannot reliably reach the external container registry required by its Podman cross-build image
+- Windows ARM64 is also hosted because the `.52` image does not include the ARM64 MSVC libraries
 
 Why:
 
 - tighter control over toolchain drift
 - consistent caches and system dependencies
-- ability to preserve already-proven local build environment behavior
+- ability to preserve the already-proven local Windows x64 build environment
 
 Current runner expectation:
 
 - Windows x64 through the self-hosted Windows runner on `.52`
-- Linux x64 and arm64 through the same `.52` Windows runner, using the local Podman build image as the Linux build environment
+- Linux x64 and arm64 through GitHub-hosted Ubuntu runners, using the native x64 toolchain and `gcc-aarch64-linux-gnu` for ARM64
 - Windows arm64 through the GitHub-hosted `windows-2025` runner, which includes the ARM64 MSVC libraries missing from `.52`
 
 Operational expectation:
 
 - GitHub Actions selects explicit self-hosted labels that map to the build image or runner fleet anchored at `192.168.1.52`
-- release validation should confirm that Windows and Linux builds did not silently fall back to unrelated runners
+- release validation should confirm that Windows x64 uses `.52` and Linux jobs use the declared Ubuntu runner
+
+### Linux
+
+Linux release builds use GitHub-hosted Ubuntu runners. The x64 target uses the runner's native GNU toolchain; the ARM64 target installs `gcc-aarch64-linux-gnu` and `libc6-dev-arm64-cross`. This avoids a network-sensitive Podman image dependency while keeping the target and C toolchain explicit in the workflow.
 
 ### macOS
 

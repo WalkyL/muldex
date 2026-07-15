@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Describe the intended operator flow for running `muldex` release builds when GitHub Actions orchestrates the pipeline, Windows x64 and Linux compilation run on the self-hosted build host at `192.168.1.52`, and Windows ARM64 compilation runs on a hosted Windows image.
+Describe the intended operator flow for running `muldex` release builds when GitHub Actions orchestrates the pipeline, Windows x64 compilation runs on the self-hosted build host at `192.168.1.52`, Linux compilation runs on hosted Ubuntu images, and Windows ARM64 compilation runs on a hosted Windows image.
 
 This is a practical runbook, not a policy manifesto.
 
@@ -15,10 +15,15 @@ This is a practical runbook, not a policy manifesto.
 - macOS build jobs
 - release artifact attachment to GitHub Release
 
-### Self-hosted build host
+### Self-hosted Windows build host
 
-- Windows x64 and Linux build jobs
-- package generation for those targets
+- Windows x64 build job
+- package generation for the Windows x64 target
+
+### GitHub-hosted Linux jobs
+
+- Linux x64 and ARM64 build jobs
+- package generation and artifact verification for those targets
 
 ### GitHub-hosted Windows ARM64 job
 
@@ -29,7 +34,7 @@ Current intended self-hosted build host:
 
 - `192.168.1.52`
 
-Expected labels in the workflow path:
+Expected labels for the self-hosted Windows path:
 
 - `self-hosted`
 - `muldex`
@@ -38,8 +43,6 @@ Expected labels in the workflow path:
 plus one platform label such as:
 
 - `windows-x64`
-- `linux-x64`
-- `linux-arm64`
 
 ## Two release entry modes
 
@@ -87,11 +90,20 @@ Expect:
 - `cargo test -p muldex-cli` passes
 - `cargo test` passes
 
-### Windows/Linux jobs
+### Windows x64 job
 
 Expect:
 
-- jobs land on the self-hosted runner set that maps to `192.168.1.52`
+- the job lands on the self-hosted runner set that maps to `192.168.1.52`
+- the Windows package script runs
+- artifact verification passes
+
+### Linux jobs
+
+Expect:
+
+- jobs land on the declared GitHub-hosted Ubuntu runner
+- the ARM64 job reports the GNU cross linker preflight
 - package scripts run
 - artifact verification passes
 
