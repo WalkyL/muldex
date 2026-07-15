@@ -62,9 +62,18 @@ jobs:
       - name: Build Windows release binaries (host-direct per PMA hybrid model)
         shell: pwsh
         run: |
-          $env:PATH = "D:\BuildTools\VS2022\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64;" + $env:PATH
-          cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc
-          cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc
+          $vcvarsall = "D:\BuildTools\VS2022\VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvarsall)) {
+            throw "Visual Studio environment script not found: $vcvarsall"
+          }
+
+          # Load the matching MSVC/Windows SDK environment for each target.
+          # The ARM64 build otherwise inherits the x64 SDK LIB path and fails
+          # with LNK1181 when link.exe cannot find bcrypt.lib.
+          cmd /d /s /c "call `"$vcvarsall`" amd64 && cargo build -p muldex-cli --release --target x86_64-pc-windows-msvc"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd /d /s /c "call `"$vcvarsall`" amd64_arm64 && cargo build -p muldex-cli --release --target aarch64-pc-windows-msvc"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Linux release binaries (podman cross build container on local host)
         shell: pwsh

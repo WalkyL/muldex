@@ -5,11 +5,20 @@ pub(crate) mod markdown_render;
 pub(crate) mod notifications;
 pub(crate) mod overlay;
 pub(crate) mod render;
+#[cfg(windows)]
+pub(crate) mod terminal;
+#[cfg(not(windows))]
+#[path = "terminal_non_windows.rs"]
 pub(crate) mod terminal;
 pub(crate) mod terminal_palette;
 pub(crate) mod theme;
 pub(crate) mod view_model;
+#[cfg(windows)]
 pub(crate) mod win32_input;
+#[cfg(not(windows))]
+#[path = "win32_input_non_windows.rs"]
+pub(crate) mod win32_input;
+#[cfg(windows)]
 pub(crate) mod wincon_backend;
 
 pub(crate) use keymap::RuntimeKeymap;
